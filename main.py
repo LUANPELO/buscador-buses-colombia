@@ -370,6 +370,16 @@ def agrupar_por_departamento(ciudades):
         departamentos[dept].append({"nombre": ciudad["nombre"], "slug": ciudad["slug"]})
     return departamentos
 
+@app.get("/health")
+async def health_check():
+    """Endpoint de salud para mantener la API activa con cron jobs"""
+    return {
+        "status": "healthy",
+        "timestamp": datetime.now().isoformat(),
+        "service": "Buscador Buses Colombia",
+        "version": "1.0.1"
+    }
+
 @app.get("/")
 async def root():
     return {
@@ -379,6 +389,7 @@ async def root():
         "autor": "Luis Pérez",
         "endpoints": {
             "GET /": "Info",
+            "GET /health": "Health check (mantener activa)",
             "GET /ciudades": "Ciudades",
             "GET /buscar": "Todas empresas",
             "GET /buscar-rapido-ochoa": "Solo Ochoa",
