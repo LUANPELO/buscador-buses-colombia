@@ -161,7 +161,7 @@ async def buscar_ciudad_redbus(nombre_ciudad: str) -> Optional[Dict]:
         "la apartada": {"id": "197122", "name": "La Apartada (Cor) (Todos)"},
         "chinu": {"id": "197105", "name": "Chinu (Cor) (Todos)"},
         "san antero": {"id": "197147", "name": "San Antero (Cor) (Todos)"},
-        "sincelejo": {"id": "195187", "name": "Sincelejo (Suc) (Todos)"},
+        "sincelejo": {"id": "195243", "name": "Sincelejo (Suc) (Todos)"},
         "covenas": {"id": "197107", "name": "Covenas (Suc) (Todos)"},
         "san marcos": {"id": "197148", "name": "San Marcos (Suc) (Todos)"},
         "tolu": {"id": "197156", "name": "Tolu (Suc) (Todos)"},
