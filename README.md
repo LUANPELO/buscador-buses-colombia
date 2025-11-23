@@ -1,39 +1,51 @@
 # 🚌 Buscador de Buses Colombia
 
-API REST para buscar horarios de buses en Colombia con sistema de alertas de disponibilidad en tiempo real.
+API REST para buscar horarios de buses en Colombia con sistema de alertas y monitoreo en tiempo real.
+
+## 👨‍💻 Autor
+
+**Luis Pérez**  
+Desarrollador en Rápido Ochoa  
+📧 [GitHub](https://github.com/LUANPELO)
+
+---
 
 ## 🌟 Características
 
-- ✅ Búsqueda de horarios en **todas las empresas** de buses de Colombia
-- ✅ Soporte para **todas las ciudades** sin mapeo hardcodeado
-- ✅ Sistema de **monitoreo** y **alertas** automáticas
-- ✅ Notificaciones cuando quedan pocos asientos disponibles
-- ✅ API REST completa y documentada
+- ✅ **Búsqueda en tiempo real** - Horarios actualizados desde RedBus
+- ✅ **Sistema de alertas** - Notificaciones cuando quedan pocos asientos
+- ✅ **Monitoreo automático** - Revisa disponibilidad cada 5 minutos
+- ✅ **Filtros avanzados** - Por precio, horario, tipo de bus, rating
+- ✅ **49 ciudades** - Todas las rutas de Rápido Ochoa en Colombia
+- ✅ **Datos reales** - Asientos disponibles, precios y horarios verificados
+- ✅ **API REST completa** - Documentación interactiva con Swagger
 
-## 🚀 Empresas Soportadas
+---
 
-A través de redBus, la API tiene acceso a:
-- Expreso Brasilia
-- Rápido Ochoa
-- Copetran
-- Berlinas del Fonce
-- Concorde
-- Y muchas más...
+## 🚀 Tecnologías
 
-## 📋 Requisitos
+- **Python 3.8+**
+- **FastAPI** - Framework web moderno y rápido
+- **httpx** - Cliente HTTP asíncrono
+- **uvicorn** - Servidor ASGI de alto rendimiento
 
-- Python 3.8+
-- pip
+---
 
-## 🔧 Instalación
+## 📦 Instalación
 
-1. **Clonar el repositorio:**
+### Requisitos previos
+- Python 3.8 o superior
+- pip (gestor de paquetes de Python)
+
+### Pasos de instalación
+
+1. **Clonar el repositorio**
 ```bash
-git clone https://github.com/tu-usuario/buscador-buses-colombia.git
+git clone https://github.com/LUANPELO/buscador-buses-colombia.git
 cd buscador-buses-colombia
 ```
 
-2. **Crear entorno virtual (recomendado):**
+2. **Crear entorno virtual (recomendado)**
 ```bash
 python -m venv venv
 
@@ -44,76 +56,86 @@ venv\Scripts\activate
 source venv/bin/activate
 ```
 
-3. **Instalar dependencias:**
+3. **Instalar dependencias**
 ```bash
 pip install -r requirements.txt
 ```
 
-## ▶️ Ejecutar
+4. **Ejecutar el servidor**
 ```bash
 python main.py
 ```
 
 El servidor estará disponible en: `http://localhost:8000`
 
-## 📚 Documentación
+---
 
-Accede a la documentación interactiva en:
-- Swagger UI: `http://localhost:8000/docs`
-- ReDoc: `http://localhost:8000/redoc`
+## 📖 Documentación
 
-## 🎯 Ejemplos de Uso
-
-### 1. Buscar horarios entre ciudades
-```bash
-GET http://localhost:8000/buscar?origen=barranquilla&destino=medellin&fecha=2025-11-22
+### Swagger UI (Documentación interactiva)
+```
+http://localhost:8000/docs
 ```
 
-### 2. Filtrar por empresa
-```bash
-GET http://localhost:8000/buscar?origen=bogota&destino=cali&fecha=2025-12-01&empresa=brasilia
+### ReDoc
+```
+http://localhost:8000/redoc
 ```
 
-### 3. Buscar ciudad
-```bash
-GET http://localhost:8000/buscar-ciudad?ciudad=cartagena
+---
+
+## 🎯 Endpoints Principales
+
+### 🔍 Búsqueda de Buses
+
+#### Todas las empresas (para web)
+```http
+GET /buscar?origen=barranquilla&destino=medellin&fecha=2025-11-23
 ```
 
-### 4. Monitorear una ruta
-```bash
-POST http://localhost:8000/monitorear?origen=barranquilla&destino=medellin&fecha=2025-11-22&horario=19:00&empresa=ochoa
+#### Solo Rápido Ochoa (para app móvil)
+```http
+GET /buscar-rapido-ochoa?origen=barranquilla&destino=medellin&fecha=2025-11-23
 ```
 
-### 5. Ver alertas generadas
-```bash
-GET http://localhost:8000/alertas
-GET http://localhost:8000/alertas?nivel=CRITICO&ultimas=10
+#### Búsqueda avanzada con filtros
+```http
+GET /buscar-avanzado?origen=barranquilla&destino=medellin&fecha=2025-11-23&precio_max=200000&hora_min=18:00&solo_ac=true&ordenar_por=precio
 ```
 
-### 6. Ver rutas monitoreadas
-```bash
-GET http://localhost:8000/monitoreando
+### 📍 Ciudades Disponibles
+```http
+GET /ciudades
 ```
 
-## ⚙️ Configuración de Alertas
+Retorna las 49 ciudades donde opera Rápido Ochoa, organizadas por departamento.
 
-El sistema genera alertas automáticas cuando:
-- ⚡ **ADVERTENCIA**: Quedan menos de 10 asientos
-- ⚠️ **CRÍTICO**: Quedan menos de 5 asientos
-- 🚨 **AGOTADO**: No quedan asientos disponibles
-
-Puedes configurar estos umbrales:
-```bash
-PUT http://localhost:8000/configurar-alertas?umbral_critico=3&umbral_advertencia=8&intervalo_revision=180
+### ⏱️ Verificar Disponibilidad en Tiempo Real
+```http
+GET /verificar-disponibilidad?origen=barranquilla&destino=medellin&fecha=2025-11-23&hora_salida=19:00
 ```
 
-## 🛠️ Tecnologías
+### 🔔 Sistema de Alertas
 
-- **FastAPI**: Framework web moderno y rápido
-- **httpx**: Cliente HTTP asíncrono
-- **uvicorn**: Servidor ASGI de alto rendimiento
+#### Monitorear una ruta
+```http
+POST /monitorear?origen=barranquilla&destino=medellin&fecha=2025-11-23&horario=19:00&empresa=ochoa
+```
 
-## 📊 Estructura de Respuesta
+#### Ver alertas generadas
+```http
+GET /alertas?nivel=CRITICO&ultimas=10
+```
+
+#### Ver rutas monitoreadas
+```http
+GET /monitoreando
+```
+
+---
+
+## 📊 Ejemplo de Respuesta
+
 ```json
 {
   "exito": true,
@@ -127,45 +149,169 @@ PUT http://localhost:8000/configurar-alertas?umbral_critico=3&umbral_advertencia
     "id": "195160",
     "nombre_completo": "Medellin (Ant) (Todos)"
   },
-  "fecha": "2025-11-22",
-  "total_buses": 13,
-  "empresas_disponibles": ["Rápido Ochoa", "Expreso Brasilia"],
+  "fecha": "2025-11-23",
+  "empresa": "Rápido Ochoa",
+  "total_buses": 5,
   "horarios": [
     {
       "empresa": "Rápido Ochoa",
       "tipo_bus": "Rey Dorado - Lo máximo",
-      "hora_salida": "00:30:00",
-      "hora_llegada": "11:20:00",
+      "hora_salida": "19:00:00",
+      "hora_llegada": "05:50:00",
       "duracion_horas": 10.8,
       "precio": 185000,
       "precio_total": 194250,
       "asientos_disponibles": 33,
       "asientos_totales": 38,
-      "rating": 3.5,
+      "rating": 4.2,
       "punto_embarque": "Terminal de Barranquilla",
-      "punto_desembarque": "Terminal De Medellin"
+      "punto_desembarque": "Terminal De Medellin",
+      "es_ac": true,
+      "es_cama": true
     }
   ]
 }
 ```
 
-## 👨‍💻 Autor
+---
 
-**Luis - Desarrollador en Rápido Ochoa**
+## 🌍 Ciudades Disponibles
+
+La API cubre **49 ciudades** en Colombia donde opera Rápido Ochoa:
+
+**Antioquia:** Medellín, Caucasia, Jardín, Arboletes, Urrao, Ciudad Bolívar, Puerto Berrío, Rionegro-Marinilla, Betulia, Andes, Giraldo, Yarumal, Bolombolo, Concordia, Tarazá, Caicedo
+
+**Atlántico:** Barranquilla
+
+**Bolívar:** Cartagena, Magangué, San Onofre, Carmen de Bolívar, Mompox
+
+**Caldas:** La Dorada
+
+**Chocó:** Quibdó, Istmina, Condoto, Tutunendo
+
+**Córdoba:** Montería, Planeta Rica, Lorica, Cereté, La Apartada, Chinú, San Antero
+
+**Cundinamarca:** Bogotá
+
+**La Guajira:** Maicao, Riohacha
+
+**Magdalena:** Santa Marta, Ciénaga
+
+**Sucre:** Sincelejo, Coveñas, San Marcos, Tolú, Sahagún
+
+---
+
+## ⚙️ Configuración de Alertas
+
+El sistema genera alertas automáticas cuando:
+- ⚡ **ADVERTENCIA**: Quedan menos de 10 asientos
+- ⚠️ **CRÍTICO**: Quedan menos de 5 asientos
+- 🚨 **AGOTADO**: No quedan asientos disponibles
+
+### Configurar umbrales personalizados
+```http
+PUT /configurar-alertas?umbral_critico=3&umbral_advertencia=8&intervalo_revision=180
+```
+
+---
+
+## 🔧 Filtros Disponibles
+
+| Filtro | Descripción | Ejemplo |
+|--------|-------------|---------|
+| `empresa` | Filtrar por empresa | `empresa=brasilia` |
+| `precio_min` | Precio mínimo | `precio_min=100000` |
+| `precio_max` | Precio máximo | `precio_max=200000` |
+| `hora_min` | Hora mínima de salida | `hora_min=18:00` |
+| `hora_max` | Hora máxima de salida | `hora_max=23:59` |
+| `asientos_min` | Mínimo asientos disponibles | `asientos_min=20` |
+| `solo_ac` | Solo buses con AC | `solo_ac=true` |
+| `solo_cama` | Solo buses tipo cama | `solo_cama=true` |
+| `rating_min` | Rating mínimo (0-5) | `rating_min=4.0` |
+| `ordenar_por` | Ordenar resultados | `ordenar_por=precio` |
+
+**Opciones de ordenamiento:** `hora`, `precio`, `rating`, `asientos`
+
+---
+
+## 🎨 Casos de Uso
+
+### Para App Móvil Flutter
+Usar el endpoint `/buscar-rapido-ochoa` que retorna solo buses de Rápido Ochoa.
+
+### Para Página Web
+Usar el endpoint `/buscar` que retorna todas las empresas disponibles.
+
+### Sistema de Monitoreo
+Configurar alertas para rutas específicas y recibir notificaciones cuando la disponibilidad cambie.
+
+---
+
+## 🛠️ Desarrollo
+
+### Estructura del Proyecto
+```
+buscador-buses-colombia/
+├── main.py              # Código principal de la API
+├── config.py            # Configuración de alertas
+├── requirements.txt     # Dependencias
+├── test_endpoints.py    # Script de pruebas
+├── .gitignore          # Archivos ignorados por Git
+├── LICENSE             # Licencia MIT
+└── README.md           # Este archivo
+```
+
+### Ejecutar Tests
+```bash
+python test_endpoints.py
+```
+
+---
 
 ## 📝 Licencia
 
-MIT License
+Este proyecto está bajo la Licencia MIT. Ver el archivo [LICENSE](LICENSE) para más detalles.
+
+---
 
 ## 🤝 Contribuciones
 
-Las contribuciones son bienvenidas. Por favor:
+Las contribuciones son bienvenidas. Para cambios importantes:
+
 1. Fork el proyecto
 2. Crea una rama para tu feature (`git checkout -b feature/AmazingFeature`)
 3. Commit tus cambios (`git commit -m 'Add some AmazingFeature'`)
 4. Push a la rama (`git push origin feature/AmazingFeature`)
 5. Abre un Pull Request
 
+---
+
 ## 📧 Contacto
 
-Para preguntas o sugerencias, abre un issue en GitHub.
+**Luis Pérez**  
+Desarrollador en Rápido Ochoa
+
+Para preguntas o sugerencias, abre un [issue](https://github.com/LUANPELO/buscador-buses-colombia/issues) en GitHub.
+
+---
+
+## 🙏 Agradecimientos
+
+- [RedBus](https://www.redbus.co) - Por proporcionar los datos de horarios
+- [FastAPI](https://fastapi.tiangolo.com/) - Framework web utilizado
+- [Rápido Ochoa](https://www.rapidoochoa.com/) - Empresa de transporte
+
+---
+
+## 🚀 Roadmap
+
+- [ ] Sistema de reservas interno
+- [ ] Integración con pasarela de pagos
+- [ ] Notificaciones por email/SMS
+- [ ] Panel de administración
+- [ ] App móvil Flutter completa
+- [ ] API de análisis de rutas más populares
+
+---
+
+**⭐ Si este proyecto te fue útil, considera darle una estrella en GitHub!**
