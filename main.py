@@ -272,14 +272,25 @@ async def buscar_redbus_dinamico(origen: str, destino: str, fecha: str):
             
             if response.status_code == 200:
                 data = response.json()
+                
+                # DEBUG: Información detallada
+                inventories = data.get("inventories", [])
+                print(f"🔍 DEBUG Página {pagina + 1}:")
+                print(f"   - Status: {response.status_code}")
+                print(f"   - Total inventories en response: {len(inventories)}")
+                print(f"   - Tiene más resultados (hasMoreResults): {data.get('hasMoreResults', 'N/A')}")
+                print(f"   - Total count: {data.get('totalCount', 'N/A')}")
+                print(f"   - Offset actual: {offset}")
+                print(f"   - Limit: {limit}")
+                
                 buses_pagina = normalizar_resultados_redbus(data)
                 
                 if not buses_pagina:
-                    print(f"✅ Paginación completa. Total buses: {len(todos_los_buses)}")
+                    print(f"✅ Paginación completa. Total buses acumulados: {len(todos_los_buses)}")
                     break
                 
                 todos_los_buses.extend(buses_pagina)
-                print(f"📄 Página {pagina + 1}: {len(buses_pagina)} buses. Total: {len(todos_los_buses)}")
+                print(f"📄 Página {pagina + 1}: {len(buses_pagina)} buses normalizados. Total acumulado: {len(todos_los_buses)}")
                 
                 offset += limit
             else:
