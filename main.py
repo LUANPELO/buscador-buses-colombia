@@ -209,7 +209,7 @@ async def buscar_redbus_dinamico(origen: str, destino: str, fecha: str):
         raise HTTPException(404, f"No se encontró la ciudad destino: {destino}")
     
     url = "https://www.redbus.co/search/SearchV4Results"
-    params = {"fromCity": origen_data["id"], "toCity": destino_data["id"], "src": origen_data["name"], "dst": destino_data["name"], "DOJ": fecha, "sectionId": "0", "groupId": "0", "limit": "100", "offset": "0", "sort": "0", "sortOrder": "0", "meta": "true", "returnSearch": "0"}
+    params = {"fromCity": origen_data["id"], "toCity": destino_data["id"], "src": origen_data["name"], "dst": destino_data["name"], "DOJ": fecha, "sectionId": "0", "groupId": "0", "limit": "500", "offset": "0", "sort": "0", "sortOrder": "0", "meta": "true", "returnSearch": "0"}
     headers = {"accept": "application/json, text/plain, */*", "content-type": "application/json", "origin": "https://www.redbus.co", "user-agent": "Mozilla/5.0"}
     payload = {"AcType": [], "CampaignFilter": [], "SeaterType": [], "amtList": [], "at": [], "bcf": [], "bpIdentifier": [], "bpList": [], "dpList": [], "dt": [], "onlyShow": [], "opBusTypeFilterList": [], "persuasionList": [], "rtcBusTypeList": [], "travelsList": []}
     
