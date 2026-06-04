@@ -9,7 +9,7 @@ from config import CONFIG_ALERTAS
 app = FastAPI(
     title="Buscador de Buses Colombia - Rápido Ochoa",
     description="API para buscar horarios de buses en Colombia con sistema de alertas",
-    version="1.0.1"
+    version="1.0.2"
 )
 
 app.add_middleware(
@@ -221,7 +221,7 @@ async def buscar_ciudad_redbus(nombre_ciudad: str) -> Optional[Dict]:
         return None
 
 async def buscar_redbus_dinamico(origen: str, destino: str, fecha: str):
-    """Busca en redBus con PAGINACIÓN para obtener TODOS los resultados"""
+    """Busca en redBus con paginación — nuevo endpoint POST /rpw/api/searchResults"""
     origen_data = await buscar_ciudad_redbus(origen)
     destino_data = await buscar_ciudad_redbus(destino)
     
@@ -234,75 +234,74 @@ async def buscar_redbus_dinamico(origen: str, destino: str, fecha: str):
     offset = 0
     limit = 100
     max_paginas = 5
-    
+
+    # Nuevo endpoint RedBus (POST con body JSON de filtros)
+    url = "https://www.redbus.co/rpw/api/searchResults"
+    headers = {
+        "accept": "*/*",
+        "content-type": "application/json",
+        "origin": "https://www.redbus.co",
+        "referer": "https://www.redbus.co/",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36",
+    }
+    body = {
+        "appliedFilterCount": 0,
+        "onlyShow": [], "dt": [], "SeaterType": [], "AcType": [],
+        "travelsList": [], "amtList": [], "at": [], "bcf": [],
+        "bpIdentifier": [], "bpKeys": [], "bpList": [],
+        "dpIdentifier": [], "dpKeys": [], "dpList": [],
+        "RouteIds": [], "CampaignFilter": [], "opBusTypeFilterList": [],
+        "persuasionList": [], "preRouteFilters": None,
+        "priceRange": [], "streaksFilter": []
+    }
+
     for pagina in range(max_paginas):
-        url = "https://www.redbus.co/search/SearchV4Results"
-        
         params = {
             "fromCity": origen_data["id"],
             "toCity": destino_data["id"],
-            "src": origen_data["name"],
-            "dst": destino_data["name"],
             "DOJ": fecha,
-            "sectionId": "0",
-            "groupId": "0",
             "limit": str(limit),
             "offset": str(offset),
+            "meta": "true",
+            "groupId": "0",
+            "sectionId": "0",
             "sort": "0",
             "sortOrder": "0",
-            "meta": "true",
-            "returnSearch": "0"
+            "from": "initialLoad" if pagina == 0 else "pagination",
+            "getUuid": "true",
+            "bT": "1",
+            "clearLMBFilter": "undefined",
+            "isFilterApplied": "false",
         }
-        
-        headers = {
-            "accept": "application/json, text/plain, */*",
-            "content-type": "application/json",
-            "origin": "https://www.redbus.co",
-            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        }
-        
-        payload = {
-            "AcType": [], "CampaignFilter": [], "SeaterType": [],
-            "amtList": [], "at": [], "bcf": [], "bpIdentifier": [],
-            "bpList": [], "dpList": [], "dt": [], "onlyShow": [],
-            "opBusTypeFilterList": [], "persuasionList": [],
-            "rtcBusTypeList": [], "travelsList": []
-        }
-        
+
         try:
-            response = await client.post(url, params=params, json=payload, headers=headers)
-            
+            response = await client.post(url, params=params, json=body, headers=headers)
+
             if response.status_code == 200:
                 data = response.json()
-                
-                # DEBUG: Información detallada
-                inventories = data.get("inventories", [])
-                print(f"🔍 DEBUG Página {pagina + 1}:")
-                print(f"   - Status: {response.status_code}")
-                print(f"   - Total inventories en response: {len(inventories)}")
-                print(f"   - Tiene más resultados (hasMoreResults): {data.get('hasMoreResults', 'N/A')}")
-                print(f"   - Total count: {data.get('totalCount', 'N/A')}")
-                print(f"   - Offset actual: {offset}")
-                print(f"   - Limit: {limit}")
-                
-                buses_pagina = normalizar_resultados_redbus(data)
-                
-                if not buses_pagina:
-                    print(f"✅ Paginación completa. Total buses acumulados: {len(todos_los_buses)}")
+                inventories = data.get("data", {}).get("inventories", [])
+                total_count = data.get("data", {}).get("metaData", {}).get("totalCount", 0)
+
+                print(f"🔍 Página {pagina + 1}: {len(inventories)} buses | total: {total_count} | offset: {offset}")
+
+                if not inventories:
                     break
-                
+
+                buses_pagina = normalizar_resultados_redbus({"inventories": inventories})
                 todos_los_buses.extend(buses_pagina)
-                print(f"📄 Página {pagina + 1}: {len(buses_pagina)} buses normalizados. Total acumulado: {len(todos_los_buses)}")
-                
+
+                if len(todos_los_buses) >= total_count:
+                    break
+
                 offset += limit
             else:
                 print(f"⚠️ Error HTTP {response.status_code} en página {pagina + 1}")
                 break
-                
+
         except Exception as e:
             print(f"❌ Error en página {pagina + 1}: {e}")
             break
-    
+
     return {
         "origen": origen_data,
         "destino": destino_data,
@@ -331,8 +330,8 @@ def normalizar_resultados_redbus(data: dict) -> List[Dict]:
                 "asientos_disponibles": bus.get("availableSeats", 0),
                 "asientos_totales": bus.get("totalSeats", 0),
                 "asientos_ventana": bus.get("availableWindowSeats", 0),
-                "punto_embarque": bus.get("bpData", [{}])[0].get("Name", "N/A") if bus.get("bpData") else "N/A",
-                "punto_desembarque": bus.get("dpData", [{}])[0].get("Name", "N/A") if bus.get("dpData") else "N/A",
+                "punto_embarque": bus.get("standardBpName", "N/A"),
+                "punto_desembarque": bus.get("standardDpName", "N/A"),
                 "rating": bus.get("totalRatings", 0),
                 "num_reviews": bus.get("numberOfReviews", "0"),
                 "es_ac": bus.get("isAc", False),
@@ -350,7 +349,7 @@ def convertir_fecha_a_redbus(fecha_input: str) -> str:
         for fmt in ["%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y"]:
             try:
                 fecha = datetime.strptime(fecha_input, fmt)
-                meses = {1: "Jan", 2: "Feb", 3: "Mar", 4: "Apr", 5: "May", 6: "Jun", 
+                meses = {1: "Jan", 2: "Feb", 3: "Mar", 4: "Apr", 5: "May", 6: "Jun",
                         7: "Jul", 8: "Aug", 9: "Sep", 10: "Oct", 11: "Nov", 12: "Dec"}
                 return f"{fecha.day:02d}-{meses[fecha.month]}-{fecha.year}"
             except:
@@ -372,19 +371,18 @@ def agrupar_por_departamento(ciudades):
 
 @app.get("/health")
 async def health_check():
-    """Endpoint de salud para mantener la API activa con cron jobs"""
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
         "service": "Buscador Buses Colombia",
-        "version": "1.0.1"
+        "version": "1.0.2"
     }
 
 @app.get("/")
 async def root():
     return {
         "nombre": "🚌 Buscador de Buses Colombia - Rápido Ochoa",
-        "version": "1.0.1",
+        "version": "1.0.2",
         "descripcion": "API con paginación completa",
         "autor": "Luis Pérez",
         "endpoints": {
@@ -514,9 +512,7 @@ async def verificar_disponibilidad(origen: str, destino: str, fecha: str, hora_s
 
 @app.get("/buscar-avanzado")
 async def endpoint_buscar_avanzado(
-    origen: str,
-    destino: str,
-    fecha: str,
+    origen: str, destino: str, fecha: str,
     empresa: Optional[str] = None,
     precio_min: Optional[int] = None,
     precio_max: Optional[int] = None,
@@ -566,15 +562,9 @@ async def endpoint_buscar_avanzado(
         "destino": {"ciudad": destino.title(), "id": resultado["destino"]["id"], "nombre_completo": resultado["destino"]["name"]},
         "fecha": fecha,
         "filtros_aplicados": {
-            "empresa": empresa,
-            "precio_min": precio_min,
-            "precio_max": precio_max,
-            "hora_min": hora_min,
-            "hora_max": hora_max,
-            "asientos_min": asientos_min,
-            "solo_ac": solo_ac,
-            "solo_cama": solo_cama,
-            "rating_min": rating_min,
+            "empresa": empresa, "precio_min": precio_min, "precio_max": precio_max,
+            "hora_min": hora_min, "hora_max": hora_max, "asientos_min": asientos_min,
+            "solo_ac": solo_ac, "solo_cama": solo_cama, "rating_min": rating_min,
             "ordenar_por": ordenar_por
         },
         "total_buses": len(resultados),
@@ -583,27 +573,19 @@ async def endpoint_buscar_avanzado(
 
 @app.post("/monitorear")
 async def crear_monitor(
-    origen: str,
-    destino: str,
-    fecha: str,
+    origen: str, destino: str, fecha: str,
     horario_especifico: Optional[str] = None,
     empresa_especifica: Optional[str] = None,
     background_tasks: BackgroundTasks = None
 ):
     monitor = MonitorRuta(origen, destino, fecha, horario_especifico, empresa_especifica)
     rutas_monitoreadas[monitor.id] = monitor
-    
     return {
         "exito": True,
         "mensaje": "Monitoreo iniciado",
         "monitor_id": monitor.id,
-        "detalles": {
-            "origen": origen,
-            "destino": destino,
-            "fecha": fecha,
-            "horario_especifico": horario_especifico,
-            "empresa_especifica": empresa_especifica
-        },
+        "detalles": {"origen": origen, "destino": destino, "fecha": fecha,
+                     "horario_especifico": horario_especifico, "empresa_especifica": empresa_especifica},
         "configuracion": CONFIG_ALERTAS
     }
 
@@ -620,23 +602,16 @@ async def listar_monitores():
     monitores = []
     for monitor_id, monitor in rutas_monitoreadas.items():
         monitores.append({
-            "id": monitor.id,
-            "origen": monitor.origen,
-            "destino": monitor.destino,
-            "fecha": monitor.fecha,
-            "horario_especifico": monitor.horario_especifico,
-            "empresa_especifica": monitor.empresa_especifica,
-            "activo": monitor.activo,
+            "id": monitor.id, "origen": monitor.origen, "destino": monitor.destino,
+            "fecha": monitor.fecha, "horario_especifico": monitor.horario_especifico,
+            "empresa_especifica": monitor.empresa_especifica, "activo": monitor.activo,
             "ultima_revision": monitor.ultima_revision.isoformat() if monitor.ultima_revision else None
         })
     return {"total": len(monitores), "monitores": monitores}
 
 @app.get("/alertas")
 async def obtener_alertas(limite: int = 50):
-    return {
-        "total": len(alertas_generadas),
-        "alertas": alertas_generadas[-limite:]
-    }
+    return {"total": len(alertas_generadas), "alertas": alertas_generadas[-limite:]}
 
 @app.delete("/alertas")
 async def limpiar_alertas():
