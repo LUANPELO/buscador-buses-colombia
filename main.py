@@ -20,7 +20,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-client = httpx.AsyncClient(timeout=30.0)
+client = httpx.AsyncClient(timeout=30.0, follow_redirects=True)
 
 rutas_monitoreadas = {}
 alertas_generadas = []
@@ -394,7 +394,8 @@ async def root():
             "GET /buscar-avanzado": "Filtros",
             "GET /verificar-disponibilidad": "Tiempo real",
             "POST /monitorear": "Monitorear",
-            "GET /alertas": "Alertas"
+            "GET /alertas": "Alertas",
+            "GET /sillas": "Sillas disponibles por bus"
         },
         "docs": "/docs"
     }
@@ -617,3 +618,136 @@ async def obtener_alertas(limite: int = 50):
 async def limpiar_alertas():
     alertas_generadas.clear()
     return {"exito": True, "mensaje": "Alertas limpiadas"}
+
+async def obtener_sillas_redbus(route_id: int, operator_id: int, fecha: str,
+                                 from_city_name: str, to_city_name: str) -> Dict:
+    """Consulta el layout de sillas de un bus específico."""
+    url = "https://www.redbus.co/rpw/api/seatLayout"
+    params = {
+        "doj": fecha,
+        "routeId": str(route_id),
+        "oid": str(operator_id),
+        "seniorCitizen": "",
+        "deal": "",
+        "toCityName": to_city_name,
+        "fromCityName": from_city_name,
+        "bT": "1",
+        "removeStaleInvFromSRP": "true",
+    }
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "*/*",
+        "Referer": "https://www.redbus.co/",
+    }
+    response = await client.get(url, params=params, headers=headers)
+    response.raise_for_status()
+    data = response.json()
+
+    services = data.get("services", [])
+    if not services:
+        return {"disponibles": [], "ocupadas": [], "total": 0, "num_disponibles": 0, "num_ocupadas": 0}
+
+    seatlist = services[0].get("seatlist", [])
+    disponibles = sorted([s["Id"] for s in seatlist if s["IsAvailable"]], key=lambda x: int(x))
+    ocupadas = sorted([s["Id"] for s in seatlist if not s["IsAvailable"]], key=lambda x: int(x))
+
+    return {
+        "total": len(seatlist),
+        "num_disponibles": len(disponibles),
+        "num_ocupadas": len(ocupadas),
+        "disponibles": disponibles,
+        "ocupadas": ocupadas,
+    }
+
+@app.get("/sillas")
+async def consultar_sillas(
+    origen: str,
+    destino: str,
+    fecha: str,
+    hora_salida: str,
+    empresa: Optional[str] = None,
+):
+    """
+    Retorna las sillas disponibles y ocupadas de un bus específico.
+    Ejemplo: /sillas?origen=barranquilla&destino=medellin&fecha=2026-06-04&hora_salida=18:00
+    """
+    fecha_redbus = convertir_fecha_a_redbus(fecha)
+    origen_data = await buscar_ciudad_redbus(origen)
+    destino_data = await buscar_ciudad_redbus(destino)
+
+    if not origen_data:
+        raise HTTPException(404, f"Ciudad origen no encontrada: {origen}")
+    if not destino_data:
+        raise HTTPException(404, f"Ciudad destino no encontrada: {destino}")
+
+    hora_norm = hora_salida if len(hora_salida.split(":")) == 3 else hora_salida + ":00"
+
+    # Buscar el bus para obtener routeId y operatorId
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "*/*",
+        "Content-Type": "application/json",
+        "Origin": "https://www.redbus.co",
+        "Referer": "https://www.redbus.co/",
+    }
+    body = {
+        "appliedFilterCount": 0,
+        "onlyShow": [], "dt": [], "SeaterType": [], "AcType": [],
+        "travelsList": [], "amtList": [], "at": [], "bcf": [],
+        "bpIdentifier": [], "bpKeys": [], "bpList": [],
+        "dpIdentifier": [], "dpKeys": [], "dpList": [],
+        "RouteIds": [], "CampaignFilter": [], "opBusTypeFilterList": [],
+        "persuasionList": [], "preRouteFilters": None,
+        "priceRange": [], "streaksFilter": []
+    }
+    params = {
+        "fromCity": origen_data["id"], "toCity": destino_data["id"],
+        "DOJ": fecha_redbus, "limit": "100", "offset": "0",
+        "meta": "true", "groupId": "0", "sectionId": "0",
+        "sort": "0", "sortOrder": "0", "from": "initialLoad",
+        "getUuid": "true", "bT": "1",
+        "clearLMBFilter": "undefined", "isFilterApplied": "false",
+    }
+    r = await client.post(
+        "https://www.redbus.co/rpw/api/searchResults",
+        params=params, json=body, headers=headers
+    )
+    inventories = r.json().get("data", {}).get("inventories", [])
+
+    # Encontrar el bus exacto por hora y empresa
+    bus_raw = None
+    for inv in inventories:
+        dep = inv.get("departureTime", "")
+        hora_inv = dep.split(" ")[1] if dep else ""
+        emp_match = not empresa or empresa.lower() in inv.get("travelsName", "").lower()
+        if hora_inv == hora_norm and emp_match:
+            bus_raw = inv
+            break
+
+    if not bus_raw:
+        raise HTTPException(404, f"No se encontró bus a las {hora_salida}" +
+                            (f" de {empresa}" if empresa else ""))
+
+    sillas = await obtener_sillas_redbus(
+        route_id=bus_raw["routeId"],
+        operator_id=bus_raw["operatorId"],
+        fecha=fecha_redbus,
+        from_city_name=origen_data["name"].replace(" (Todos)", ""),
+        to_city_name=destino_data["name"].replace(" (Todos)", ""),
+    )
+
+    return {
+        "exito": True,
+        "bus": {
+            "empresa": bus_raw.get("travelsName"),
+            "tipo": bus_raw.get("busType"),
+            "hora_salida": hora_norm,
+            "hora_llegada": bus_raw.get("arrivalTime", "").split(" ")[1] if bus_raw.get("arrivalTime") else "",
+            "precio": bus_raw.get("fareList", [0])[0],
+            "route_id": bus_raw["routeId"],
+        },
+        "origen": origen.title(),
+        "destino": destino.title(),
+        "fecha": fecha,
+        "sillas": sillas,
+    }
