@@ -1,15 +1,22 @@
+"""
+Buscador de Buses Colombia v2.0
+- Rápido Ochoa: API propia (one-api.rapidoochoa.com.co)
+- Otras empresas: RedBus (rpw/api/searchResults)
+"""
+
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
 from typing import List, Dict, Optional
 from datetime import datetime
 import asyncio
+import time
 from config import CONFIG_ALERTAS
 
 app = FastAPI(
-    title="Buscador de Buses Colombia - Rápido Ochoa",
-    description="API para buscar horarios de buses en Colombia con sistema de alertas",
-    version="1.0.2"
+    title="Buscador de Buses Colombia",
+    description="API con fuentes duales: Rápido Ochoa + RedBus",
+    version="2.0.0"
 )
 
 app.add_middleware(
@@ -26,493 +33,821 @@ rutas_monitoreadas = {}
 alertas_generadas = []
 estado_anterior = {}
 
+# ── Constantes ────────────────────────────────────────────────────────────────
+
+OCHOA_TOKEN = "Token token=ac1d2715377e5d88e7fffe848034c0b1"
+OCHOA_BASE  = "https://one-api.rapidoochoa.com.co/api/v2"
+OCHOA_HEADERS = {
+    "Authorization": OCHOA_TOKEN,
+    "Accept": "application/json",
+    "Content-Type": "application/json",
+    "Origin": "https://viaje.rapidoochoa.com.co",
+    "Referer": "https://viaje.rapidoochoa.com.co/",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+}
+
+REDBUS_BASE = "https://www.redbus.co/rpw/api"
+REDBUS_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "Accept": "*/*",
+    "Content-Type": "application/json",
+    "Origin": "https://www.redbus.co",
+    "Referer": "https://www.redbus.co/",
+}
+
+# ── Mapa de ciudades con IDs para ambas APIs ──────────────────────────────────
+
+CIUDADES = {
+    "medellin": {
+        "nombre": "Medellín",
+        "departamento": "Antioquia",
+        "redbus_id": "195160",
+        "redbus_name": "Medellin (Ant) (Todos)",
+        "ochoa_slug": "t-medellin-ad933da7-aca7-456a-a0e6-96e843785cd2-ochoa",
+        "ochoa_name": "Medellín Terminal Norte",
+    },
+    "barranquilla": {
+        "nombre": "Barranquilla",
+        "departamento": "Atlántico",
+        "redbus_id": "195179",
+        "redbus_name": "Barranquilla (Atl) (Todos)",
+        "ochoa_slug": "t-barranquilla-03cee54d-a938-4d67-93d7-b4ac9c1aa660-ochoa",
+        "ochoa_name": "Barranquilla",
+    },
+    "monteria": {
+        "nombre": "Montería",
+        "departamento": "Córdoba",
+        "redbus_id": "195200",
+        "redbus_name": "Monteria (Cor) (Todos)",
+        "ochoa_slug": "t-monteria-84c13da6-23a7-4cd2-9197-c4fd4deeb6ad-ochoa",
+        "ochoa_name": "Montería",
+    },
+    "cartagena": {
+        "nombre": "Cartagena",
+        "departamento": "Bolívar",
+        "redbus_id": "195181",
+        "redbus_name": "Cartagena (Bol) (Todos)",
+        "ochoa_slug": "t-cartagena-5e13cd74-efd9-427f-b39e-3de02025d338-ochoa",
+        "ochoa_name": "Cartagena",
+    },
+    "sincelejo": {
+        "nombre": "Sincelejo",
+        "departamento": "Sucre",
+        "redbus_id": "195243",
+        "redbus_name": "Sincelejo (Suc) (Todos)",
+        "ochoa_slug": "t-sincelejo-ochoa",
+        "ochoa_name": "Sincelejo",
+    },
+    "bogota": {
+        "nombre": "Bogotá",
+        "departamento": "Cundinamarca",
+        "redbus_id": "195201",
+        "redbus_name": "Bogota (D.C) (Todos)",
+        "ochoa_slug": "t-bogota-26eddda1-587e-47ac-856a-73ceed0fae96-ochoa",
+        "ochoa_name": "Bogotá Terminal Salitre",
+    },
+    "santa marta": {
+        "nombre": "Santa Marta",
+        "departamento": "Magdalena",
+        "redbus_id": "195215",
+        "redbus_name": "Santa Marta (Mag) (Todos)",
+        "ochoa_slug": "t-santa-marta-ochoa",
+        "ochoa_name": "Santa Marta",
+    },
+    "caucasia": {
+        "nombre": "Caucasia",
+        "departamento": "Antioquia",
+        "redbus_id": "195150",
+        "redbus_name": "Caucasia (Ant) (Todos)",
+        "ochoa_slug": "t-caucasia-a90bf704-c4fe-4c6a-8e49-505d8e33a67d-ochoa",
+        "ochoa_name": "Caucasia",
+    },
+    "planeta rica": {
+        "nombre": "Planeta Rica",
+        "departamento": "Córdoba",
+        "redbus_id": "195548",
+        "redbus_name": "Planeta Rica (Cor) (Todos)",
+        "ochoa_slug": "t-planeta-rica-617f0bd3-5b0f-4d9e-ab86-cbe6e54fc1d8-ochoa",
+        "ochoa_name": "Planeta Rica",
+    },
+    "riohacha": {
+        "nombre": "Riohacha",
+        "departamento": "La Guajira",
+        "redbus_id": "195204",
+        "redbus_name": "Riohacha (Guaj) (Todos)",
+        "ochoa_slug": "t-riohacha-ochoa",
+        "ochoa_name": "Riohacha",
+    },
+    "maicao": {
+        "nombre": "Maicao",
+        "departamento": "La Guajira",
+        "redbus_id": "195205",
+        "redbus_name": "Maicao (Guaj) (Todos)",
+        "ochoa_slug": "t-maicao-06618764-7308-49a5-99e8-6c43b951c755-ochoa",
+        "ochoa_name": "Maicao",
+    },
+    "quibdo": {
+        "nombre": "Quibdó",
+        "departamento": "Chocó",
+        "redbus_id": "195175",
+        "redbus_name": "Quibdo (Cho) (Todos)",
+        "ochoa_slug": "t-quibdo-ochoa",
+        "ochoa_name": "Quibdó",
+    },
+    "tolu": {
+        "nombre": "Tolú",
+        "departamento": "Sucre",
+        "redbus_id": "196394",
+        "redbus_name": "Tolu (Suc) (Todos)",
+        "ochoa_slug": "t-tolu-ochoa",
+        "ochoa_name": "Tolú",
+    },
+    "covenas": {
+        "nombre": "Coveñas",
+        "departamento": "Sucre",
+        "redbus_id": "196179",
+        "redbus_name": "Covenas (Suc) (Todos)",
+        "ochoa_slug": "t-covenas-bdd75504-d89c-41af-8bf2-e88db378e24f-ochoa",
+        "ochoa_name": "Coveñas",
+    },
+    "lorica": {
+        "nombre": "Lorica",
+        "departamento": "Córdoba",
+        "redbus_id": "194924",
+        "redbus_name": "Lorica (Cor) (Todos)",
+        "ochoa_slug": "t-lorica-ba275cb0-353e-498b-9e44-418598d49e10-ochoa",
+        "ochoa_name": "Lorica",
+    },
+    "cerete": {
+        "nombre": "Cereté",
+        "departamento": "Córdoba",
+        "redbus_id": "196158",
+        "redbus_name": "Cerete (Cor) (Todos)",
+        "ochoa_slug": "t-cerete-61e41806-ecc9-4ad5-8d69-99e071317d72-ochoa",
+        "ochoa_name": "Cereté",
+    },
+    "la apartada": {
+        "nombre": "La Apartada",
+        "departamento": "Córdoba",
+        "redbus_id": "195547",
+        "redbus_name": "La Apartada (Cor) (Todos)",
+        "ochoa_slug": "t-la-apartada-abaf6891-9896-4fed-bdf0-05fabf2c4a46-ochoa",
+        "ochoa_name": "La Apartada",
+    },
+    "chinu": {
+        "nombre": "Chinú",
+        "departamento": "Córdoba",
+        "redbus_id": "195541",
+        "redbus_name": "Chinu (Cor) (Todos)",
+        "ochoa_slug": "t-chinu-6a189f68-de46-41a6-b095-351e9c66ff76-ochoa",
+        "ochoa_name": "Chinú",
+    },
+    "sahagun": {
+        "nombre": "Sahagún",
+        "departamento": "Córdoba",
+        "redbus_id": "195550",
+        "redbus_name": "Sahagun (Cor) (Todos)",
+        "ochoa_slug": "t-sahagun-ochoa",
+        "ochoa_name": "Sahagún",
+    },
+    "magangue": {
+        "nombre": "Magangué",
+        "departamento": "Bolívar",
+        "redbus_id": "196300",
+        "redbus_name": "Magangue (Bol) (Todos)",
+        "ochoa_slug": "t-magangue-4ffd627c-331c-4ae3-b540-beb22f7d128e-ochoa",
+        "ochoa_name": "Magangue",
+    },
+    "carmen de bolivar": {
+        "nombre": "Carmen de Bolívar",
+        "departamento": "Bolívar",
+        "redbus_id": "195800",
+        "redbus_name": "Carmen De Bolivar (Bol) (Todos)",
+        "ochoa_slug": "t-carmen-de-bolivar-85e23a0a-f7bf-4de7-a985-2d585b69a379-ochoa",
+        "ochoa_name": "Carmen de Bolívar",
+    },
+    "cienaga": {
+        "nombre": "Ciénaga",
+        "departamento": "Magdalena",
+        "redbus_id": "195553",
+        "redbus_name": "Cienaga (Mag) (Todos)",
+        "ochoa_slug": "t-cienaga-ff869e21-0dee-4395-bd6d-06fdc437338e-ochoa",
+        "ochoa_name": "Ciénaga",
+    },
+    "la dorada": {
+        "nombre": "La Dorada",
+        "departamento": "Caldas",
+        "redbus_id": "195187",
+        "redbus_name": "La Dorada (Cal) (Todos)",
+        "ochoa_slug": "t-la-dorada-982bc6eb-ae93-4f8f-b385-909f34698c13-ochoa",
+        "ochoa_name": "La Dorada",
+    },
+    "puerto berrio": {
+        "nombre": "Puerto Berrío",
+        "departamento": "Antioquia",
+        "redbus_id": "196351",
+        "redbus_name": "Puerto Berrio (Ant) (Todos)",
+        "ochoa_slug": "t-puerto-berrio-0f0d8340-3724-4d92-bbb8-0149c9beb914-ochoa",
+        "ochoa_name": "Puerto Berrio",
+    },
+    "caucasia": {
+        "nombre": "Caucasia",
+        "departamento": "Antioquia",
+        "redbus_id": "195150",
+        "redbus_name": "Caucasia (Ant) (Todos)",
+        "ochoa_slug": "t-caucasia-a90bf704-c4fe-4c6a-8e49-505d8e33a67d-ochoa",
+        "ochoa_name": "Caucasia",
+    },
+    "jardin": {
+        "nombre": "Jardín",
+        "departamento": "Antioquia",
+        "redbus_id": "195158",
+        "redbus_name": "Jardin (Ant) (Todos)",
+        "ochoa_slug": "t-jardin-a056b1a2-384a-47fd-ad24-dcce1d92e810-ochoa",
+        "ochoa_name": "Jardín",
+    },
+    "urrao": {
+        "nombre": "Urrao",
+        "departamento": "Antioquia",
+        "redbus_id": "195175",
+        "redbus_name": "Urrao (Ant) (Todos)",
+        "ochoa_slug": "t-urrao-ochoa",
+        "ochoa_name": "Urrao",
+    },
+    "ciudad bolivar": {
+        "nombre": "Ciudad Bolívar",
+        "departamento": "Antioquia",
+        "redbus_id": "195153",
+        "redbus_name": "Ciudad Bolivar (Ant) (Todos)",
+        "ochoa_slug": "t-ciudad-bolivar-4415bc09-8da1-4b06-b5fd-e6d1c919898c-ochoa",
+        "ochoa_name": "Ciudad Bolívar",
+    },
+    "yarumal": {
+        "nombre": "Yarumal",
+        "departamento": "Antioquia",
+        "redbus_id": "195545",
+        "redbus_name": "Yarumal (Ant) (Todos)",
+        "ochoa_slug": "t-yarumal-ochoa",
+        "ochoa_name": "Yarumal",
+    },
+    "taraza": {
+        "nombre": "Tarazá",
+        "departamento": "Antioquia",
+        "redbus_id": "195540",
+        "redbus_name": "Taraza (Ant) (Todos)",
+        "ochoa_slug": "t-taraza-ochoa",
+        "ochoa_name": "Tarazá",
+    },
+    "caicedo": {
+        "nombre": "Caicedo",
+        "departamento": "Antioquia",
+        "redbus_id": "195491",
+        "redbus_name": "Caicedo (Ant) (Todos)",
+        "ochoa_slug": "t-caicedo-30d35bdf-1a39-4a41-be69-c69810b9d1f0-ochoa",
+        "ochoa_name": "Caicedo",
+    },
+    "istmina": {
+        "nombre": "Istmina",
+        "departamento": "Chocó",
+        "redbus_id": "196805",
+        "redbus_name": "Istmina (Cho) (Todos)",
+        "ochoa_slug": "t-istmina-54aa1e24-8a92-484a-aedc-59be05a474e8-ochoa",
+        "ochoa_name": "Istmina",
+    },
+    "condoto": {
+        "nombre": "Condoto",
+        "departamento": "Chocó",
+        "redbus_id": "195199",
+        "redbus_name": "Condoto (Cho) (Todos)",
+        "ochoa_slug": "t-condoto-b29b0bb3-d8c0-4885-9609-899c786468c1-ochoa",
+        "ochoa_name": "Condoto",
+    },
+    "tutunendo": {
+        "nombre": "Tutunendo",
+        "departamento": "Chocó",
+        "redbus_id": "195531",
+        "redbus_name": "Tutunendo (Cho) (Todos)",
+        "ochoa_slug": "t-tutunendo-ochoa",
+        "ochoa_name": "Tutunendo",
+    },
+    "rionegro": {
+        "nombre": "Rionegro - Marinilla",
+        "departamento": "Antioquia",
+        "redbus_id": "202962",
+        "redbus_name": "Rionegro (Ant) (Todos)",
+        "ochoa_slug": "t-rionegro-ochoa",
+        "ochoa_name": "Rionegro - Marinilla",
+    },
+    "san marcos": {
+        "nombre": "San Marcos",
+        "departamento": "Sucre",
+        "redbus_id": "195565",
+        "redbus_name": "San Marcos (Suc) (Todos)",
+        "ochoa_slug": "t-san-marcos-ochoa",
+        "ochoa_name": "San Marcos",
+    },
+    "san antero": {
+        "nombre": "San Antero",
+        "departamento": "Córdoba",
+        "redbus_id": "196364",
+        "redbus_name": "San Antero (Cor) (Todos)",
+        "ochoa_slug": "t-san-antero-ochoa",
+        "ochoa_name": "San Antero",
+    },
+    "san onofre": {
+        "nombre": "San Onofre",
+        "departamento": "Bolívar",
+        "redbus_id": "195566",
+        "redbus_name": "San Onofre (Suc) (Todos)",
+        "ochoa_slug": "t-san-onofre-ochoa",
+        "ochoa_name": "San Onofre",
+    },
+    "arboletes": {
+        "nombre": "Arboletes",
+        "departamento": "Antioquia",
+        "redbus_id": "195102",
+        "redbus_name": "Arboletes (Ant) (Todos)",
+        "ochoa_slug": "t-arboletes-42417357-bc6f-4ba4-9f86-89ab986a6075-ochoa",
+        "ochoa_name": "Arboletes",
+    },
+    "betulia": {
+        "nombre": "Betulia",
+        "departamento": "Antioquia",
+        "redbus_id": "195489",
+        "redbus_name": "Betulia (Ant) (Todos)",
+        "ochoa_slug": "t-betulia-983d843e-2025-42b1-8510-1f49ce3461bd-ochoa",
+        "ochoa_name": "Betulia",
+    },
+    "concordia": {
+        "nombre": "Concordia",
+        "departamento": "Antioquia",
+        "redbus_id": "195500",
+        "redbus_name": "Concordia (Ant) (Todos)",
+        "ochoa_slug": "t-concordia-8b2b560e-0b04-4e10-9507-5ba3808ef1eb-ochoa",
+        "ochoa_name": "Concordia",
+    },
+    "bolombolo": {
+        "nombre": "Bolombolo",
+        "departamento": "Antioquia",
+        "redbus_id": "195490",
+        "redbus_name": "Bolombolo (Ant) (Todos)",
+        "ochoa_slug": "t-bolombolo-92fdca4d-e5ea-48aa-9844-17c3084458ab-ochoa",
+        "ochoa_name": "Bolombolo",
+    },
+    "giraldo": {
+        "nombre": "Giraldo",
+        "departamento": "Antioquia",
+        "redbus_id": "195157",
+        "redbus_name": "Giraldo (Ant) (Todos)",
+        "ochoa_slug": "t-giraldo-de4431c7-3153-49a0-b1ae-81f99061667e-ochoa",
+        "ochoa_name": "Giraldo",
+    },
+    "andes": {
+        "nombre": "Andes",
+        "departamento": "Antioquia",
+        "redbus_id": "195488",
+        "redbus_name": "Andes (Ant) (Todos)",
+        "ochoa_slug": "t-andes-0b98aae3-b325-43cc-9cd8-b4628c070f18-ochoa",
+        "ochoa_name": "Andes",
+    },
+    "mompox": {
+        "nombre": "Mompox",
+        "departamento": "Bolívar",
+        "redbus_id": "195833",
+        "redbus_name": "Mompox (Bol) (Todos)",
+        "ochoa_slug": "t-mompox-mompox-ochoa",
+        "ochoa_name": "Mompox",
+    },
+    "valledupar": {
+        "nombre": "Valledupar",
+        "departamento": "Cesar",
+        "redbus_id": None,
+        "redbus_name": None,
+        "ochoa_slug": "t-valledupar-ochoa",
+        "ochoa_name": "Valledupar",
+    },
+    "facatativa": {
+        "nombre": "Facatativá",
+        "departamento": "Cundinamarca",
+        "redbus_id": None,
+        "redbus_name": None,
+        "ochoa_slug": "t-facatativa-1f0b4224-e083-4a0c-bb23-006788d9f2fe-ochoa",
+        "ochoa_name": "Facatativa",
+    },
+}
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def convertir_fecha_redbus(fecha_input: str) -> str:
+    meses = {1:"Jan",2:"Feb",3:"Mar",4:"Apr",5:"May",6:"Jun",
+              7:"Jul",8:"Aug",9:"Sep",10:"Oct",11:"Nov",12:"Dec"}
+    for fmt in ["%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y"]:
+        try:
+            f = datetime.strptime(fecha_input, fmt)
+            return f"{f.day:02d}-{meses[f.month]}-{f.year}"
+        except:
+            continue
+    raise HTTPException(400, "Formato de fecha inválido. Usa YYYY-MM-DD")
+
+def convertir_fecha_ochoa(fecha_input: str) -> str:
+    for fmt in ["%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y"]:
+        try:
+            f = datetime.strptime(fecha_input, fmt)
+            return f"{f.day:02d}-{f.month:02d}-{f.year}"
+        except:
+            continue
+    raise HTTPException(400, "Formato de fecha inválido. Usa YYYY-MM-DD")
+
+def buscar_ciudad(nombre: str) -> Optional[Dict]:
+    key = nombre.lower().strip()
+    return CIUDADES.get(key)
+
+# ── Fuente Rápido Ochoa ───────────────────────────────────────────────────────
+
+async def buscar_ochoa(origen: str, destino: str, fecha: str) -> Dict:
+    ciudad_o = buscar_ciudad(origen)
+    ciudad_d = buscar_ciudad(destino)
+    if not ciudad_o:
+        raise HTTPException(404, f"Ciudad no encontrada: {origen}")
+    if not ciudad_d:
+        raise HTTPException(404, f"Ciudad no encontrada: {destino}")
+    if not ciudad_o.get("ochoa_slug") or not ciudad_d.get("ochoa_slug"):
+        raise HTTPException(404, f"Ruta no disponible en Rápido Ochoa")
+
+    fecha_ochoa = convertir_fecha_ochoa(fecha)
+
+    # Paso 1: crear búsqueda
+    r1 = await client.post(f"{OCHOA_BASE}/search", json={
+        "origin": ciudad_o["ochoa_slug"],
+        "destination": ciudad_d["ochoa_slug"],
+        "date": fecha_ochoa,
+        "passengers": ["adult"],
+        "round": False,
+        "way": "oneway"
+    }, headers=OCHOA_HEADERS)
+    r1.raise_for_status()
+    search_id = r1.json()["search"]["id"]
+
+    # Paso 2: obtener trips (polling)
+    trips = []
+    for _ in range(5):
+        await asyncio.sleep(2)
+        r2 = await client.get(
+            f"{OCHOA_BASE}/search/{search_id}?type=bus",
+            headers=OCHOA_HEADERS
+        )
+        data = r2.json()
+        trips = data.get("trips", [])
+        if trips or data.get("state") == "finished":
+            break
+
+    resultados = []
+    for t in trips:
+        dep = t.get("departure", "")
+        arr = t.get("arrival", "")
+        resultados.append({
+            "empresa": "Rápido Ochoa",
+            "tipo_bus": t.get("service", ""),
+            "servicio": t.get("service", ""),
+            "hora_salida": dep.split("T")[1][:5] if "T" in dep else dep,
+            "hora_llegada": arr.split("T")[1][:5] if "T" in arr else arr,
+            "fecha_salida": dep,
+            "fecha_llegada": arr,
+            "duracion_minutos": t.get("duration", 0),
+            "duracion_horas": round(t.get("duration", 0) / 60, 1),
+            "precio": t.get("pricing", {}).get("office_price", 0),
+            "precio_total": t.get("pricing", {}).get("total", 0),
+            "precio_descuento": t.get("pricing", {}).get("total", 0),
+            "tarifa_servicio": 0,
+            "moneda": "COP",
+            "asientos_disponibles": t.get("availability", 0),
+            "asientos_totales": t.get("capacity", 0),
+            "es_ac": True,
+            "es_cama": False,
+            "rating": 0,
+            "num_reviews": "0",
+            "agotado": t.get("availability", 0) == 0,
+            "trip_id": t.get("id"),
+            "fuente": "rapido_ochoa",
+        })
+
+    return {
+        "origen": {"ciudad": ciudad_o["nombre"], "id": ciudad_o["ochoa_slug"]},
+        "destino": {"ciudad": ciudad_d["nombre"], "id": ciudad_d["ochoa_slug"]},
+        "search_id": search_id,
+        "resultados": resultados,
+    }
+
+# ── Fuente RedBus ─────────────────────────────────────────────────────────────
+
+REDBUS_BODY_BASE = {
+    "appliedFilterCount": 0,
+    "onlyShow": [], "dt": [], "SeaterType": [], "AcType": [],
+    "travelsList": [], "amtList": [], "at": [], "bcf": [],
+    "bpIdentifier": [], "bpKeys": [], "bpList": [],
+    "dpIdentifier": [], "dpKeys": [], "dpList": [],
+    "RouteIds": [], "CampaignFilter": [], "opBusTypeFilterList": [],
+    "persuasionList": [], "preRouteFilters": None,
+    "priceRange": [], "streaksFilter": []
+}
+
+async def buscar_redbus(origen: str, destino: str, fecha: str, empresa: Optional[str] = None) -> Dict:
+    ciudad_o = buscar_ciudad(origen)
+    ciudad_d = buscar_ciudad(destino)
+
+    # Fallback a búsqueda dinámica si no está en el mapa
+    if not ciudad_o or not ciudad_o.get("redbus_id"):
+        raise HTTPException(404, f"Ciudad no disponible en RedBus: {origen}")
+    if not ciudad_d or not ciudad_d.get("redbus_id"):
+        raise HTTPException(404, f"Ciudad no disponible en RedBus: {destino}")
+
+    fecha_rb = convertir_fecha_redbus(fecha)
+    todos = []
+    offset = 0
+
+    for _ in range(5):
+        r = await client.post(
+            f"{REDBUS_BASE}/searchResults",
+            params={
+                "fromCity": ciudad_o["redbus_id"],
+                "toCity": ciudad_d["redbus_id"],
+                "DOJ": fecha_rb,
+                "limit": "100", "offset": str(offset),
+                "meta": "true", "groupId": "0", "sectionId": "0",
+                "sort": "0", "sortOrder": "0",
+                "from": "initialLoad" if offset == 0 else "pagination",
+                "getUuid": "true", "bT": "1",
+                "clearLMBFilter": "undefined", "isFilterApplied": "false",
+            },
+            json=REDBUS_BODY_BASE,
+            headers=REDBUS_HEADERS,
+        )
+        r.raise_for_status()
+        data = r.json()
+        inventories = data.get("data", {}).get("inventories", [])
+        total = data.get("data", {}).get("metaData", {}).get("totalCount", 0)
+        if not inventories:
+            break
+
+        for bus in inventories:
+            dep = bus.get("departureTime", "")
+            arr = bus.get("arrivalTime", "")
+            todos.append({
+                "empresa": bus.get("travelsName", ""),
+                "tipo_bus": bus.get("busType", ""),
+                "servicio": bus.get("serviceName", ""),
+                "hora_salida": dep.split(" ")[1] if dep else "",
+                "hora_llegada": arr.split(" ")[1] if arr else "",
+                "fecha_salida": dep,
+                "fecha_llegada": arr,
+                "duracion_minutos": bus.get("journeyDurationMin", 0),
+                "duracion_horas": round(bus.get("journeyDurationMin", 0) / 60, 1),
+                "precio": bus.get("fareList", [0])[0] if bus.get("fareList") else 0,
+                "precio_total": (bus.get("fareList", [0])[0] + bus.get("convenienceFee", 0)) if bus.get("fareList") else 0,
+                "tarifa_servicio": bus.get("convenienceFee", 0),
+                "moneda": "COP",
+                "asientos_disponibles": bus.get("availableSeats", 0),
+                "asientos_totales": bus.get("totalSeats", 0),
+                "punto_embarque": bus.get("standardBpName", ""),
+                "punto_desembarque": bus.get("standardDpName", ""),
+                "es_ac": bus.get("isAc", False),
+                "es_cama": bus.get("isSleeper", False),
+                "rating": bus.get("totalRatings", 0),
+                "num_reviews": bus.get("numberOfReviews", "0"),
+                "agotado": bus.get("isSoldOut", False),
+                "route_id": bus.get("routeId"),
+                "operator_id": bus.get("operatorId"),
+                "fuente": "redbus",
+            })
+
+        if len(todos) >= total:
+            break
+        offset += 100
+
+    if empresa:
+        todos = [b for b in todos if empresa.lower() in b["empresa"].lower()]
+
+    return {
+        "origen": {"ciudad": ciudad_o["nombre"], "id": ciudad_o["redbus_id"], "nombre_completo": ciudad_o["redbus_name"]},
+        "destino": {"ciudad": ciudad_d["nombre"], "id": ciudad_d["redbus_id"], "nombre_completo": ciudad_d["redbus_name"]},
+        "resultados": todos,
+    }
+
+# ── Sillas Rápido Ochoa ───────────────────────────────────────────────────────
+
+async def obtener_sillas_ochoa(trip_id: str) -> Dict:
+    r1 = await client.post(
+        f"{OCHOA_BASE}/trips/{trip_id}/details_requests",
+        json={}, headers=OCHOA_HEADERS
+    )
+    r1.raise_for_status()
+    dr_id = r1.json()["id"]
+    await asyncio.sleep(2)
+
+    r2 = await client.get(
+        f"{OCHOA_BASE}/trips/{trip_id}/details_requests/{dr_id}",
+        headers=OCHOA_HEADERS
+    )
+    r2.raise_for_status()
+    bus_layout = r2.json().get("bus", [[]])[0]
+
+    disponibles = sorted(
+        [s["number"] for f in bus_layout for s in f if s.get("category") == "seat" and not s["occupied"] and not s["sold"]],
+        key=int
+    )
+    ocupadas = sorted(
+        [s["number"] for f in bus_layout for s in f if s.get("category") == "seat" and (s["occupied"] or s["sold"])],
+        key=int
+    )
+    return {
+        "total": len(disponibles) + len(ocupadas),
+        "num_disponibles": len(disponibles),
+        "num_ocupadas": len(ocupadas),
+        "disponibles": disponibles,
+        "ocupadas": ocupadas,
+    }
+
+# ── Sillas RedBus ─────────────────────────────────────────────────────────────
+
+async def obtener_sillas_redbus(route_id: int, operator_id: int, fecha: str,
+                                from_city_name: str, to_city_name: str) -> Dict:
+    fecha_rb = convertir_fecha_redbus(fecha)
+    r = await client.get(
+        f"{REDBUS_BASE}/seatLayout",
+        params={
+            "doj": fecha_rb, "routeId": str(route_id), "oid": str(operator_id),
+            "seniorCitizen": "", "deal": "",
+            "toCityName": to_city_name, "fromCityName": from_city_name,
+            "bT": "1", "removeStaleInvFromSRP": "true",
+        },
+        headers=REDBUS_HEADERS
+    )
+    r.raise_for_status()
+    services = r.json().get("services", [])
+    if not services:
+        return {"disponibles": [], "ocupadas": [], "total": 0, "num_disponibles": 0, "num_ocupadas": 0}
+
+    seatlist = services[0].get("seatlist", [])
+    disponibles = sorted([s["Id"] for s in seatlist if s["IsAvailable"]], key=int)
+    ocupadas = sorted([s["Id"] for s in seatlist if not s["IsAvailable"]], key=int)
+    return {
+        "total": len(seatlist),
+        "num_disponibles": len(disponibles),
+        "num_ocupadas": len(ocupadas),
+        "disponibles": disponibles,
+        "ocupadas": ocupadas,
+    }
+
+# ── Sistema de alertas ────────────────────────────────────────────────────────
+
 class MonitorRuta:
-    def __init__(self, origen: str, destino: str, fecha: str, horario_especifico: Optional[str] = None, empresa_especifica: Optional[str] = None):
+    def __init__(self, origen, destino, fecha, horario=None, empresa=None, fuente="rapido_ochoa"):
         self.origen = origen
         self.destino = destino
         self.fecha = fecha
-        self.horario_especifico = horario_especifico
-        self.empresa_especifica = empresa_especifica
+        self.horario = horario
+        self.empresa = empresa
+        self.fuente = fuente
         self.activo = True
         self.ultima_revision = None
-        self.id = f"{origen}_{destino}_{fecha}_{horario_especifico or 'todos'}"
+        self.id = f"{origen}_{destino}_{fecha}_{horario or 'todos'}_{fuente}"
 
 async def revisar_disponibilidad(monitor: MonitorRuta):
     try:
-        fecha_redbus = convertir_fecha_a_redbus(monitor.fecha)
-        resultado = await buscar_redbus_dinamico(monitor.origen, monitor.destino, fecha_redbus)
+        if monitor.fuente == "rapido_ochoa":
+            resultado = await buscar_ochoa(monitor.origen, monitor.destino, monitor.fecha)
+        else:
+            resultado = await buscar_redbus(monitor.origen, monitor.destino, monitor.fecha, monitor.empresa)
+
         horarios = resultado["resultados"]
-        
-        if monitor.empresa_especifica:
-            horarios = [h for h in horarios if monitor.empresa_especifica.lower() in h["empresa"].lower()]
-        
-        if monitor.horario_especifico:
-            horarios = [h for h in horarios if h["hora_salida"].startswith(monitor.horario_especifico)]
-        
-        for horario in horarios:
-            generar_alerta_si_necesario(monitor, horario)
-        
+        if monitor.horario:
+            horarios = [h for h in horarios if h["hora_salida"].startswith(monitor.horario)]
+        if monitor.empresa and monitor.fuente != "rapido_ochoa":
+            horarios = [h for h in horarios if monitor.empresa.lower() in h["empresa"].lower()]
+
+        for h in horarios:
+            generar_alerta(monitor, h)
         monitor.ultima_revision = datetime.now()
     except Exception as e:
-        print(f"Error revisando ruta {monitor.id}: {e}")
+        print(f"Error monitor {monitor.id}: {e}")
 
-def generar_alerta_si_necesario(monitor: MonitorRuta, horario: Dict):
-    asientos_disponibles = horario["asientos_disponibles"]
+def generar_alerta(monitor: MonitorRuta, horario: Dict):
+    asientos = horario["asientos_disponibles"]
     key = f"{monitor.id}_{horario['hora_salida']}_{horario['empresa']}"
-    
-    estado_prev = estado_anterior.get(key, {})
-    asientos_prev = estado_prev.get("asientos", None)
-    
-    estado_anterior[key] = {"asientos": asientos_disponibles, "timestamp": datetime.now()}
-    
+    prev = estado_anterior.get(key, {}).get("asientos")
+    estado_anterior[key] = {"asientos": asientos, "timestamp": datetime.now()}
+
     alerta = None
-    
-    if asientos_disponibles == 0 and asientos_prev != 0:
-        alerta = {
-            "tipo": "AGOTADO",
-            "nivel": "CRITICO",
-            "mensaje": f"🚨 SIN PUESTOS: {horario['empresa']} - {horario['hora_salida']}",
-            "origen": monitor.origen,
-            "destino": monitor.destino,
-            "fecha": monitor.fecha,
-            "empresa": horario["empresa"],
-            "hora_salida": horario["hora_salida"],
-            "asientos_disponibles": asientos_disponibles,
-            "asientos_totales": horario["asientos_totales"],
-            "precio": horario["precio_total"],
-            "timestamp": datetime.now().isoformat()
-        }
-    elif 0 < asientos_disponibles <= CONFIG_ALERTAS["umbral_critico"]:
-        if asientos_prev is None or asientos_prev > CONFIG_ALERTAS["umbral_critico"]:
-            alerta = {
-                "tipo": "CRITICO",
-                "nivel": "ALTO",
-                "mensaje": f"⚠️ QUEDAN SOLO {asientos_disponibles} PUESTOS: {horario['empresa']} - {horario['hora_salida']}",
-                "origen": monitor.origen,
-                "destino": monitor.destino,
-                "fecha": monitor.fecha,
-                "empresa": horario["empresa"],
-                "hora_salida": horario["hora_salida"],
-                "asientos_disponibles": asientos_disponibles,
-                "asientos_totales": horario["asientos_totales"],
-                "precio": horario["precio_total"],
-                "timestamp": datetime.now().isoformat()
-            }
-    elif CONFIG_ALERTAS["umbral_critico"] < asientos_disponibles <= CONFIG_ALERTAS["umbral_advertencia"]:
-        if asientos_prev is None or asientos_prev > CONFIG_ALERTAS["umbral_advertencia"]:
-            alerta = {
-                "tipo": "ADVERTENCIA",
-                "nivel": "MEDIO",
-                "mensaje": f"⚡ Quedan {asientos_disponibles} puestos: {horario['empresa']} - {horario['hora_salida']}",
-                "origen": monitor.origen,
-                "destino": monitor.destino,
-                "fecha": monitor.fecha,
-                "empresa": horario["empresa"],
-                "hora_salida": horario["hora_salida"],
-                "asientos_disponibles": asientos_disponibles,
-                "asientos_totales": horario["asientos_totales"],
-                "precio": horario["precio_total"],
-                "timestamp": datetime.now().isoformat()
-            }
-    
+    if asientos == 0 and prev != 0:
+        alerta = {"tipo": "AGOTADO", "nivel": "CRITICO",
+                  "mensaje": f"🚨 SIN PUESTOS: {horario['empresa']} - {horario['hora_salida']}"}
+    elif 0 < asientos <= CONFIG_ALERTAS["umbral_critico"] and (prev is None or prev > CONFIG_ALERTAS["umbral_critico"]):
+        alerta = {"tipo": "CRITICO", "nivel": "ALTO",
+                  "mensaje": f"⚠️ SOLO {asientos} PUESTOS: {horario['empresa']} - {horario['hora_salida']}"}
+    elif CONFIG_ALERTAS["umbral_critico"] < asientos <= CONFIG_ALERTAS["umbral_advertencia"] and (prev is None or prev > CONFIG_ALERTAS["umbral_advertencia"]):
+        alerta = {"tipo": "ADVERTENCIA", "nivel": "MEDIO",
+                  "mensaje": f"⚡ {asientos} puestos: {horario['empresa']} - {horario['hora_salida']}"}
+
     if alerta:
+        alerta.update({
+            "origen": monitor.origen, "destino": monitor.destino,
+            "fecha": monitor.fecha, "empresa": horario["empresa"],
+            "hora_salida": horario["hora_salida"],
+            "asientos_disponibles": asientos,
+            "precio": horario["precio_total"],
+            "timestamp": datetime.now().isoformat(),
+        })
         alertas_generadas.append(alerta)
-        print(f"🔔 ALERTA: {alerta['mensaje']}")
+        print(f"🔔 {alerta['mensaje']}")
 
 async def monitor_loop():
     while True:
         try:
-            for monitor_id, monitor in list(rutas_monitoreadas.items()):
+            for monitor in list(rutas_monitoreadas.values()):
                 if monitor.activo:
                     await revisar_disponibilidad(monitor)
             await asyncio.sleep(CONFIG_ALERTAS["intervalo_revision"])
         except Exception as e:
-            print(f"Error en monitor loop: {e}")
+            print(f"Error monitor loop: {e}")
             await asyncio.sleep(60)
 
 @app.on_event("startup")
 async def startup_event():
     asyncio.create_task(monitor_loop())
-    print("🚀 Sistema de monitoreo iniciado")
+    print("🚀 Buscador de Buses v2.0 iniciado")
 
-async def buscar_ciudad_redbus(nombre_ciudad: str) -> Optional[Dict]:
-    ciudades_principales = {
-        "medellin": {"id": "195160", "name": "Medellin (Ant) (Todos)"},
-        "caucasia": {"id": "195150", "name": "Caucasia (Ant) (Todos)"},
-        "jardin": {"id": "195158", "name": "Jardin (Ant) (Todos)"},
-        "arboletes": {"id": "195102", "name": "Arboletes (Ant) (Todos)"},
-        "urrao": {"id": "195175", "name": "Urrao (Ant) (Todos)"},
-        "ciudad bolivar": {"id": "195153", "name": "Ciudad Bolivar (Ant) (Todos)"},
-        "puerto berrio": {"id": "196351", "name": "Puerto Berrio (Ant) (Todos)"},
-        "rionegro": {"id": "202962", "name": "Rionegro (Ant) (Todos)"},
-        "marinilla": {"id": "202962", "name": "Rionegro (Ant) (Todos)"},
-        "betulia": {"id": "195489", "name": "Betulia (Ant) (Todos)"},
-        "andes": {"id": "195488", "name": "Andes (Ant) (Todos)"},
-        "giraldo": {"id": "195157", "name": "Giraldo (Ant) (Todos)"},
-        "yarumal": {"id": "195545", "name": "Yarumal (Ant) (Todos)"},
-        "bolombolo": {"id": "195490", "name": "Bolombolo (Ant) (Todos)"},
-        "concordia": {"id": "195500", "name": "Concordia (Ant) (Todos)"},
-        "taraza": {"id": "195540", "name": "Taraza (Ant) (Todos)"},
-        "caicedo": {"id": "195491", "name": "Caicedo (Ant) (Todos)"},
-        "santa rosa de osos": {"id": "195816", "name": "Santa Rosa De Osos (Ant) (Todos)"},
-        "monteria": {"id": "195200", "name": "Monteria (Cor) (Todos)"},
-        "planeta rica": {"id": "195548", "name": "Planeta Rica (Cor) (Todos)"},
-        "lorica": {"id": "194924", "name": "Lorica (Cor) (Todos)"},
-        "cerete": {"id": "196158", "name": "Cerete (Cor) (Todos)"},
-        "la apartada": {"id": "195547", "name": "La Apartada (Cor) (Todos)"},
-        "chinu": {"id": "195541", "name": "Chinu (Cor) (Todos)"},
-        "san antero": {"id": "196364", "name": "San Antero (Cor) (Todos)"},
-        "sahagun": {"id": "195550", "name": "Sahagun (Cor) (Todos)"},
-        "sincelejo": {"id": "195243", "name": "Sincelejo (Suc) (Todos)"},
-        "covenas": {"id": "196179", "name": "Covenas (Suc) (Todos)"},
-        "san marcos": {"id": "195565", "name": "San Marcos (Suc) (Todos)"},
-        "tolu": {"id": "196394", "name": "Tolu (Suc) (Todos)"},
-        "barranquilla": {"id": "195179", "name": "Barranquilla (Atl) (Todos)"},
-        "quibdo": {"id": "195175", "name": "Quibdo (Cho) (Todos)"},
-        "istmina": {"id": "196805", "name": "Istmina (Cho) (Todos)"},
-        "condoto": {"id": "195199", "name": "Condoto (Cho) (Todos)"},
-        "tutunendo": {"id": "195531", "name": "Tutunendo (Cho) (Todos)"},
-        "santa marta": {"id": "195215", "name": "Santa Marta (Mag) (Todos)"},
-        "santamarta": {"id": "195215", "name": "Santa Marta (Mag) (Todos)"},
-        "cienaga": {"id": "195553", "name": "Cienaga (Mag) (Todos)"},
-        "palomino": {"id": "196333", "name": "Palomino (Guaj) (Todos)"},
-        "maicao": {"id": "195205", "name": "Maicao (Guaj) (Todos)"},
-        "riohacha": {"id": "195204", "name": "Riohacha (Guaj) (Todos)"},
-        "la dorada": {"id": "195187", "name": "La Dorada (Cal) (Todos)"},
-        "cartagena": {"id": "195181", "name": "Cartagena (Bol) (Todos)"},
-        "magangue": {"id": "196300", "name": "Magangue (Bol) (Todos)"},
-        "san onofre": {"id": "195566", "name": "San Onofre (Suc) (Todos)"},
-        "carmen de bolivar": {"id": "195800", "name": "Carmen De Bolivar (Bol) (Todos)"},
-        "mompox": {"id": "195833", "name": "Mompox (Bol) (Todos)"},
-        "bogota": {"id": "195201", "name": "Bogota (D.C) (Todos)"},
-    }
-    
-    nombre_lower = nombre_ciudad.lower().strip()
-    if nombre_lower in ciudades_principales:
-        return ciudades_principales[nombre_lower]
-    
-    url = "https://www.redbus.co/Home/SolarSearch"
-    params = {
-        "search": nombre_ciudad,
-        "parentLocationId": "195120",
-        "parentId": "195160",
-        "parentLocationType": "CITY",
-        "state": "null",
-        "enableSolrCityId": "false"
-    }
-    headers = {
-        "accept": "application/json, text/plain, */*",
-        "user-agent": "Mozilla/5.0"
-    }
-    
-    try:
-        response = await client.get(url, params=params, headers=headers)
-        if response.status_code == 200:
-            data = response.json()
-            docs = data.get("response", {}).get("docs", [])
-            for doc in docs:
-                if doc.get("locationType") == "CITY":
-                    return {"id": str(doc.get("ID")), "name": doc.get("Name")}
-            if docs and len(docs) > 0:
-                return {"id": str(docs[0].get("ID")), "name": docs[0].get("Name")}
-        return None
-    except Exception as e:
-        print(f"Error buscando ciudad: {e}")
-        return None
-
-async def buscar_redbus_dinamico(origen: str, destino: str, fecha: str):
-    """Busca en redBus con paginación — nuevo endpoint POST /rpw/api/searchResults"""
-    origen_data = await buscar_ciudad_redbus(origen)
-    destino_data = await buscar_ciudad_redbus(destino)
-    
-    if not origen_data:
-        raise HTTPException(404, f"No se encontró la ciudad origen: {origen}")
-    if not destino_data:
-        raise HTTPException(404, f"No se encontró la ciudad destino: {destino}")
-    
-    todos_los_buses = []
-    offset = 0
-    limit = 100
-    max_paginas = 5
-
-    # Nuevo endpoint RedBus (POST con body JSON de filtros)
-    url = "https://www.redbus.co/rpw/api/searchResults"
-    headers = {
-        "accept": "*/*",
-        "content-type": "application/json",
-        "origin": "https://www.redbus.co",
-        "referer": "https://www.redbus.co/",
-        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36",
-    }
-    body = {
-        "appliedFilterCount": 0,
-        "onlyShow": [], "dt": [], "SeaterType": [], "AcType": [],
-        "travelsList": [], "amtList": [], "at": [], "bcf": [],
-        "bpIdentifier": [], "bpKeys": [], "bpList": [],
-        "dpIdentifier": [], "dpKeys": [], "dpList": [],
-        "RouteIds": [], "CampaignFilter": [], "opBusTypeFilterList": [],
-        "persuasionList": [], "preRouteFilters": None,
-        "priceRange": [], "streaksFilter": []
-    }
-
-    for pagina in range(max_paginas):
-        params = {
-            "fromCity": origen_data["id"],
-            "toCity": destino_data["id"],
-            "DOJ": fecha,
-            "limit": str(limit),
-            "offset": str(offset),
-            "meta": "true",
-            "groupId": "0",
-            "sectionId": "0",
-            "sort": "0",
-            "sortOrder": "0",
-            "from": "initialLoad" if pagina == 0 else "pagination",
-            "getUuid": "true",
-            "bT": "1",
-            "clearLMBFilter": "undefined",
-            "isFilterApplied": "false",
-        }
-
-        try:
-            response = await client.post(url, params=params, json=body, headers=headers)
-
-            if response.status_code == 200:
-                data = response.json()
-                inventories = data.get("data", {}).get("inventories", [])
-                total_count = data.get("data", {}).get("metaData", {}).get("totalCount", 0)
-
-                print(f"🔍 Página {pagina + 1}: {len(inventories)} buses | total: {total_count} | offset: {offset}")
-
-                if not inventories:
-                    break
-
-                buses_pagina = normalizar_resultados_redbus({"inventories": inventories})
-                todos_los_buses.extend(buses_pagina)
-
-                if len(todos_los_buses) >= total_count:
-                    break
-
-                offset += limit
-            else:
-                print(f"⚠️ Error HTTP {response.status_code} en página {pagina + 1}")
-                break
-
-        except Exception as e:
-            print(f"❌ Error en página {pagina + 1}: {e}")
-            break
-
-    return {
-        "origen": origen_data,
-        "destino": destino_data,
-        "resultados": todos_los_buses
-    }
-
-def normalizar_resultados_redbus(data: dict) -> List[Dict]:
-    resultados = []
-    inventories = data.get("inventories", [])
-    for bus in inventories:
-        try:
-            resultado = {
-                "empresa": bus.get("travelsName", "N/A"),
-                "tipo_bus": bus.get("busType", "N/A"),
-                "servicio": bus.get("serviceName", "N/A"),
-                "hora_salida": bus.get("departureTime", "").split(" ")[1] if bus.get("departureTime") else "N/A",
-                "hora_llegada": bus.get("arrivalTime", "").split(" ")[1] if bus.get("arrivalTime") else "N/A",
-                "fecha_salida": bus.get("departureTime", "N/A"),
-                "fecha_llegada": bus.get("arrivalTime", "N/A"),
-                "duracion_minutos": bus.get("journeyDurationMin", 0),
-                "duracion_horas": round(bus.get("journeyDurationMin", 0) / 60, 1),
-                "precio": bus.get("fareList", [0])[0] if bus.get("fareList") else 0,
-                "tarifa_servicio": bus.get("convenienceFee", 0),
-                "precio_total": bus.get("fareList", [0])[0] + bus.get("convenienceFee", 0) if bus.get("fareList") else 0,
-                "moneda": bus.get("vendorCurrency", "COP"),
-                "asientos_disponibles": bus.get("availableSeats", 0),
-                "asientos_totales": bus.get("totalSeats", 0),
-                "asientos_ventana": bus.get("availableWindowSeats", 0),
-                "punto_embarque": bus.get("standardBpName", "N/A"),
-                "punto_desembarque": bus.get("standardDpName", "N/A"),
-                "rating": bus.get("totalRatings", 0),
-                "num_reviews": bus.get("numberOfReviews", "0"),
-                "es_ac": bus.get("isAc", False),
-                "es_cama": bus.get("isSleeper", False),
-                "tiene_tracking": bus.get("isLiveTrackingAvailable", False),
-                "agotado": bus.get("isSoldOut", False),
-            }
-            resultados.append(resultado)
-        except Exception as e:
-            continue
-    return resultados
-
-def convertir_fecha_a_redbus(fecha_input: str) -> str:
-    try:
-        for fmt in ["%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y"]:
-            try:
-                fecha = datetime.strptime(fecha_input, fmt)
-                meses = {1: "Jan", 2: "Feb", 3: "Mar", 4: "Apr", 5: "May", 6: "Jun",
-                        7: "Jul", 8: "Aug", 9: "Sep", 10: "Oct", 11: "Nov", 12: "Dec"}
-                return f"{fecha.day:02d}-{meses[fecha.month]}-{fecha.year}"
-            except:
-                continue
-        if len(fecha_input.split("-")) == 3 and len(fecha_input.split("-")[1]) == 3:
-            return fecha_input
-        raise ValueError("Formato de fecha no válido")
-    except:
-        raise HTTPException(400, "Formato de fecha inválido")
-
-def agrupar_por_departamento(ciudades):
-    departamentos = {}
-    for ciudad in ciudades:
-        dept = ciudad["departamento"]
-        if dept not in departamentos:
-            departamentos[dept] = []
-        departamentos[dept].append({"nombre": ciudad["nombre"], "slug": ciudad["slug"]})
-    return departamentos
-
-@app.get("/health")
-async def health_check():
-    return {
-        "status": "healthy",
-        "timestamp": datetime.now().isoformat(),
-        "service": "Buscador Buses Colombia",
-        "version": "1.0.2"
-    }
+# ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @app.get("/")
 async def root():
     return {
-        "nombre": "🚌 Buscador de Buses Colombia - Rápido Ochoa",
-        "version": "1.0.2",
-        "descripcion": "API con paginación completa",
-        "autor": "Luis Pérez",
+        "nombre": "🚌 Buscador de Buses Colombia v2.0",
+        "version": "2.0.0",
+        "fuentes": {
+            "rapido_ochoa": "API oficial de Rápido Ochoa",
+            "redbus": "RedBus Colombia (todas las empresas)",
+        },
         "endpoints": {
-            "GET /": "Info",
-            "GET /health": "Health check (mantener activa)",
-            "GET /ciudades": "Ciudades",
-            "GET /buscar": "Todas empresas",
-            "GET /buscar-rapido-ochoa": "Solo Ochoa",
-            "GET /buscar-avanzado": "Filtros",
-            "GET /verificar-disponibilidad": "Tiempo real",
-            "POST /monitorear": "Monitorear",
-            "GET /alertas": "Alertas",
-            "GET /sillas": "Sillas disponibles por bus"
+            "GET /buscar-rapido-ochoa": "Solo Rápido Ochoa (API oficial)",
+            "GET /buscar": "Todas las empresas (RedBus)",
+            "GET /buscar-avanzado": "RedBus con filtros",
+            "GET /sillas/ochoa/{trip_id}": "Sillas por trip_id de Ochoa",
+            "GET /sillas/redbus": "Sillas por route_id de RedBus",
+            "GET /ciudades": "Ciudades disponibles",
+            "GET /health": "Estado del servicio",
         },
         "docs": "/docs"
     }
 
+@app.get("/health")
+async def health():
+    return {"status": "healthy", "timestamp": datetime.now().isoformat(), "version": "2.0.0"}
+
 @app.get("/ciudades")
 async def obtener_ciudades():
-    ciudades = [
-        {"nombre": "Medellín", "departamento": "Antioquia", "slug": "medellin"},
-        {"nombre": "Caucasia", "departamento": "Antioquia", "slug": "caucasia"},
-        {"nombre": "Jardín", "departamento": "Antioquia", "slug": "jardin"},
-        {"nombre": "Arboletes", "departamento": "Antioquia", "slug": "arboletes"},
-        {"nombre": "Urrao", "departamento": "Antioquia", "slug": "urrao"},
-        {"nombre": "Ciudad Bolívar", "departamento": "Antioquia", "slug": "ciudad bolivar"},
-        {"nombre": "Puerto Berrío", "departamento": "Antioquia", "slug": "puerto berrio"},
-        {"nombre": "Rionegro - Marinilla", "departamento": "Antioquia", "slug": "rionegro"},
-        {"nombre": "Betulia", "departamento": "Antioquia", "slug": "betulia"},
-        {"nombre": "Andes", "departamento": "Antioquia", "slug": "andes"},
-        {"nombre": "Giraldo", "departamento": "Antioquia", "slug": "giraldo"},
-        {"nombre": "Yarumal", "departamento": "Antioquia", "slug": "yarumal"},
-        {"nombre": "Bolombolo", "departamento": "Antioquia", "slug": "bolombolo"},
-        {"nombre": "Concordia", "departamento": "Antioquia", "slug": "concordia"},
-        {"nombre": "Tarazá", "departamento": "Antioquia", "slug": "taraza"},
-        {"nombre": "Caicedo", "departamento": "Antioquia", "slug": "caicedo"},
-        {"nombre": "Barranquilla", "departamento": "Atlántico", "slug": "barranquilla"},
-        {"nombre": "Cartagena", "departamento": "Bolívar", "slug": "cartagena"},
-        {"nombre": "Magangué", "departamento": "Bolívar", "slug": "magangue"},
-        {"nombre": "San Onofre", "departamento": "Bolívar", "slug": "san onofre"},
-        {"nombre": "Carmen de Bolívar", "departamento": "Bolívar", "slug": "carmen de bolivar"},
-        {"nombre": "Mompox", "departamento": "Bolívar", "slug": "mompox"},
-        {"nombre": "La Dorada", "departamento": "Caldas", "slug": "la dorada"},
-        {"nombre": "Quibdó", "departamento": "Chocó", "slug": "quibdo"},
-        {"nombre": "Istmina", "departamento": "Chocó", "slug": "istmina"},
-        {"nombre": "Condoto", "departamento": "Chocó", "slug": "condoto"},
-        {"nombre": "Tutunendo", "departamento": "Chocó", "slug": "tutunendo"},
-        {"nombre": "Montería", "departamento": "Córdoba", "slug": "monteria"},
-        {"nombre": "Planeta Rica", "departamento": "Córdoba", "slug": "planeta rica"},
-        {"nombre": "Lorica", "departamento": "Córdoba", "slug": "lorica"},
-        {"nombre": "Cereté", "departamento": "Córdoba", "slug": "cerete"},
-        {"nombre": "La Apartada", "departamento": "Córdoba", "slug": "la apartada"},
-        {"nombre": "Chinú", "departamento": "Córdoba", "slug": "chinu"},
-        {"nombre": "San Antero", "departamento": "Córdoba", "slug": "san antero"},
-        {"nombre": "Bogotá", "departamento": "Cundinamarca", "slug": "bogota"},
-        {"nombre": "Maicao", "departamento": "La Guajira", "slug": "maicao"},
-        {"nombre": "Riohacha", "departamento": "La Guajira", "slug": "riohacha"},
-        {"nombre": "Santa Marta", "departamento": "Magdalena", "slug": "santa marta"},
-        {"nombre": "Ciénaga", "departamento": "Magdalena", "slug": "cienaga"},
-        {"nombre": "Sincelejo", "departamento": "Sucre", "slug": "sincelejo"},
-        {"nombre": "Coveñas", "departamento": "Sucre", "slug": "covenas"},
-        {"nombre": "San Marcos", "departamento": "Sucre", "slug": "san marcos"},
-        {"nombre": "Tolú", "departamento": "Sucre", "slug": "tolu"},
-        {"nombre": "Sahagún", "departamento": "Sucre", "slug": "sahagun"},
+    lista = [
+        {"slug": k, "nombre": v["nombre"], "departamento": v["departamento"],
+         "disponible_ochoa": bool(v.get("ochoa_slug")),
+         "disponible_redbus": bool(v.get("redbus_id"))}
+        for k, v in CIUDADES.items()
     ]
+    return {"total": len(lista), "ciudades": sorted(lista, key=lambda x: x["nombre"])}
+
+@app.get("/buscar-rapido-ochoa")
+async def endpoint_ochoa(origen: str, destino: str, fecha: str):
+    """Busca buses de Rápido Ochoa usando su API oficial."""
+    resultado = await buscar_ochoa(origen, destino, fecha)
+    buses = sorted(resultado["resultados"], key=lambda x: x["hora_salida"])
     return {
-        "total": len(ciudades),
-        "ciudades": sorted(ciudades, key=lambda x: x["nombre"]),
-        "por_departamento": agrupar_por_departamento(ciudades)
+        "exito": True,
+        "fuente": "rapido_ochoa",
+        "origen": resultado["origen"],
+        "destino": resultado["destino"],
+        "fecha": fecha,
+        "empresa": "Rápido Ochoa",
+        "total_buses": len(buses),
+        "horarios": buses,
     }
 
 @app.get("/buscar")
-async def endpoint_buscar(origen: str, destino: str, fecha: str, empresa: Optional[str] = None):
-    fecha_redbus = convertir_fecha_a_redbus(fecha)
-    resultado = await buscar_redbus_dinamico(origen, destino, fecha_redbus)
-    resultados = resultado["resultados"]
-    if empresa:
-        resultados = [r for r in resultados if empresa.lower() in r["empresa"].lower()]
-    resultados.sort(key=lambda x: x["hora_salida"])
-    empresas_disponibles = list(set([r["empresa"] for r in resultados]))
+async def endpoint_redbus(origen: str, destino: str, fecha: str, empresa: Optional[str] = None):
+    """Busca buses en RedBus (todas las empresas o filtrado)."""
+    resultado = await buscar_redbus(origen, destino, fecha, empresa)
+    buses = sorted(resultado["resultados"], key=lambda x: x["hora_salida"])
+    empresas = sorted(list(set(b["empresa"] for b in buses)))
     return {
         "exito": True,
-        "origen": {"ciudad": origen.title(), "id": resultado["origen"]["id"], "nombre_completo": resultado["origen"]["name"]},
-        "destino": {"ciudad": destino.title(), "id": resultado["destino"]["id"], "nombre_completo": resultado["destino"]["name"]},
+        "fuente": "redbus",
+        "origen": resultado["origen"],
+        "destino": resultado["destino"],
         "fecha": fecha,
-        "total_buses": len(resultados),
-        "empresas_disponibles": sorted(empresas_disponibles),
-        "horarios": resultados
+        "total_buses": len(buses),
+        "empresas_disponibles": empresas,
+        "horarios": buses,
     }
-
-@app.get("/buscar-rapido-ochoa")
-async def buscar_solo_rapido_ochoa(origen: str, destino: str, fecha: str):
-    fecha_redbus = convertir_fecha_a_redbus(fecha)
-    resultado = await buscar_redbus_dinamico(origen, destino, fecha_redbus)
-    buses_ochoa = [bus for bus in resultado["resultados"] if "ochoa" in bus["empresa"].lower()]
-    buses_ochoa.sort(key=lambda x: x["hora_salida"])
-    return {
-        "exito": True,
-        "origen": {"ciudad": origen.title(), "id": resultado["origen"]["id"], "nombre_completo": resultado["origen"]["name"]},
-        "destino": {"ciudad": destino.title(), "id": resultado["destino"]["id"], "nombre_completo": resultado["destino"]["name"]},
-        "fecha": fecha,
-        "empresa": "Rápido Ochoa",
-        "total_buses": len(buses_ochoa),
-        "horarios": buses_ochoa
-    }
-
-@app.get("/verificar-disponibilidad")
-async def verificar_disponibilidad(origen: str, destino: str, fecha: str, hora_salida: str):
-    fecha_redbus = convertir_fecha_a_redbus(fecha)
-    resultado = await buscar_redbus_dinamico(origen, destino, fecha_redbus)
-    if len(hora_salida.split(":")) == 2:
-        hora_salida += ":00"
-    bus_encontrado = None
-    for bus in resultado["resultados"]:
-        if bus["hora_salida"] == hora_salida:
-            bus_encontrado = bus
-            break
-    if bus_encontrado:
-        return {
-            "disponible": bus_encontrado["asientos_disponibles"] > 0,
-            "asientos_disponibles": bus_encontrado["asientos_disponibles"],
-            "asientos_totales": bus_encontrado["asientos_totales"],
-            "precio": bus_encontrado["precio_total"],
-            "estado": "DISPONIBLE" if bus_encontrado["asientos_disponibles"] > 10 else "POCOS ASIENTOS" if bus_encontrado["asientos_disponibles"] > 0 else "AGOTADO",
-            "bus": bus_encontrado
-        }
-    return {"disponible": False, "mensaje": "Bus no encontrado"}
 
 @app.get("/buscar-avanzado")
-async def endpoint_buscar_avanzado(
+async def endpoint_avanzado(
     origen: str, destino: str, fecha: str,
     empresa: Optional[str] = None,
     precio_min: Optional[int] = None,
@@ -522,93 +857,95 @@ async def endpoint_buscar_avanzado(
     asientos_min: Optional[int] = None,
     solo_ac: Optional[bool] = None,
     solo_cama: Optional[bool] = None,
-    rating_min: Optional[float] = None,
-    ordenar_por: Optional[str] = "hora"
+    ordenar_por: Optional[str] = "hora",
 ):
-    fecha_redbus = convertir_fecha_a_redbus(fecha)
-    resultado = await buscar_redbus_dinamico(origen, destino, fecha_redbus)
-    resultados = resultado["resultados"]
-    
-    if empresa:
-        resultados = [r for r in resultados if empresa.lower() in r["empresa"].lower()]
-    if precio_min is not None:
-        resultados = [r for r in resultados if r["precio_total"] >= precio_min]
-    if precio_max is not None:
-        resultados = [r for r in resultados if r["precio_total"] <= precio_max]
-    if hora_min:
-        resultados = [r for r in resultados if r["hora_salida"] >= hora_min]
-    if hora_max:
-        resultados = [r for r in resultados if r["hora_salida"] <= hora_max]
-    if asientos_min is not None:
-        resultados = [r for r in resultados if r["asientos_disponibles"] >= asientos_min]
-    if solo_ac:
-        resultados = [r for r in resultados if r["es_ac"]]
-    if solo_cama:
-        resultados = [r for r in resultados if r["es_cama"]]
-    if rating_min is not None:
-        resultados = [r for r in resultados if r["rating"] >= rating_min]
-    
-    if ordenar_por == "precio":
-        resultados.sort(key=lambda x: x["precio_total"])
-    elif ordenar_por == "duracion":
-        resultados.sort(key=lambda x: x["duracion_minutos"])
-    elif ordenar_por == "rating":
-        resultados.sort(key=lambda x: x["rating"], reverse=True)
-    else:
-        resultados.sort(key=lambda x: x["hora_salida"])
-    
+    """Busca en RedBus con filtros avanzados."""
+    resultado = await buscar_redbus(origen, destino, fecha, empresa)
+    buses = resultado["resultados"]
+
+    if precio_min: buses = [b for b in buses if b["precio_total"] >= precio_min]
+    if precio_max: buses = [b for b in buses if b["precio_total"] <= precio_max]
+    if hora_min:   buses = [b for b in buses if b["hora_salida"] >= hora_min]
+    if hora_max:   buses = [b for b in buses if b["hora_salida"] <= hora_max]
+    if asientos_min: buses = [b for b in buses if b["asientos_disponibles"] >= asientos_min]
+    if solo_ac:    buses = [b for b in buses if b["es_ac"]]
+    if solo_cama:  buses = [b for b in buses if b["es_cama"]]
+
+    if ordenar_por == "precio":     buses.sort(key=lambda x: x["precio_total"])
+    elif ordenar_por == "duracion": buses.sort(key=lambda x: x["duracion_minutos"])
+    else:                           buses.sort(key=lambda x: x["hora_salida"])
+
     return {
         "exito": True,
-        "origen": {"ciudad": origen.title(), "id": resultado["origen"]["id"], "nombre_completo": resultado["origen"]["name"]},
-        "destino": {"ciudad": destino.title(), "id": resultado["destino"]["id"], "nombre_completo": resultado["destino"]["name"]},
+        "fuente": "redbus",
+        "origen": resultado["origen"],
+        "destino": resultado["destino"],
         "fecha": fecha,
-        "filtros_aplicados": {
-            "empresa": empresa, "precio_min": precio_min, "precio_max": precio_max,
-            "hora_min": hora_min, "hora_max": hora_max, "asientos_min": asientos_min,
-            "solo_ac": solo_ac, "solo_cama": solo_cama, "rating_min": rating_min,
-            "ordenar_por": ordenar_por
-        },
-        "total_buses": len(resultados),
-        "horarios": resultados
+        "total_buses": len(buses),
+        "horarios": buses,
+    }
+
+@app.get("/sillas/ochoa/{trip_id}")
+async def sillas_ochoa(trip_id: str):
+    """Sillas de un bus de Rápido Ochoa por trip_id."""
+    sillas = await obtener_sillas_ochoa(trip_id)
+    return {"exito": True, "fuente": "rapido_ochoa", "trip_id": trip_id, "sillas": sillas}
+
+@app.get("/sillas/redbus")
+async def sillas_redbus(
+    origen: str, destino: str, fecha: str, hora_salida: str,
+    empresa: Optional[str] = None,
+):
+    """Sillas de un bus en RedBus buscando por hora de salida."""
+    resultado = await buscar_redbus(origen, destino, fecha, empresa)
+    hora_norm = hora_salida if len(hora_salida.split(":")) == 3 else hora_salida + ":00"
+    bus = next((b for b in resultado["resultados"] if b["hora_salida"] == hora_norm), None)
+    if not bus:
+        raise HTTPException(404, f"Bus no encontrado a las {hora_salida}")
+
+    ciudad_o = buscar_ciudad(origen)
+    ciudad_d = buscar_ciudad(destino)
+    sillas = await obtener_sillas_redbus(
+        route_id=bus["route_id"],
+        operator_id=bus["operator_id"],
+        fecha=fecha,
+        from_city_name=ciudad_o["redbus_name"].replace(" (Todos)", ""),
+        to_city_name=ciudad_d["redbus_name"].replace(" (Todos)", ""),
+    )
+    return {
+        "exito": True,
+        "fuente": "redbus",
+        "bus": {"empresa": bus["empresa"], "hora_salida": hora_norm, "precio": bus["precio_total"]},
+        "sillas": sillas,
     }
 
 @app.post("/monitorear")
 async def crear_monitor(
     origen: str, destino: str, fecha: str,
-    horario_especifico: Optional[str] = None,
-    empresa_especifica: Optional[str] = None,
-    background_tasks: BackgroundTasks = None
+    fuente: str = "rapido_ochoa",
+    horario: Optional[str] = None,
+    empresa: Optional[str] = None,
 ):
-    monitor = MonitorRuta(origen, destino, fecha, horario_especifico, empresa_especifica)
+    monitor = MonitorRuta(origen, destino, fecha, horario, empresa, fuente)
     rutas_monitoreadas[monitor.id] = monitor
-    return {
-        "exito": True,
-        "mensaje": "Monitoreo iniciado",
-        "monitor_id": monitor.id,
-        "detalles": {"origen": origen, "destino": destino, "fecha": fecha,
-                     "horario_especifico": horario_especifico, "empresa_especifica": empresa_especifica},
-        "configuracion": CONFIG_ALERTAS
-    }
-
-@app.delete("/monitorear/{monitor_id}")
-async def detener_monitor(monitor_id: str):
-    if monitor_id in rutas_monitoreadas:
-        rutas_monitoreadas[monitor_id].activo = False
-        del rutas_monitoreadas[monitor_id]
-        return {"exito": True, "mensaje": f"Monitor {monitor_id} detenido"}
-    raise HTTPException(404, "Monitor no encontrado")
+    return {"exito": True, "mensaje": "Monitoreo iniciado", "monitor_id": monitor.id}
 
 @app.get("/monitores")
 async def listar_monitores():
-    monitores = []
-    for monitor_id, monitor in rutas_monitoreadas.items():
-        monitores.append({
-            "id": monitor.id, "origen": monitor.origen, "destino": monitor.destino,
-            "fecha": monitor.fecha, "horario_especifico": monitor.horario_especifico,
-            "empresa_especifica": monitor.empresa_especifica, "activo": monitor.activo,
-            "ultima_revision": monitor.ultima_revision.isoformat() if monitor.ultima_revision else None
-        })
-    return {"total": len(monitores), "monitores": monitores}
+    return {"total": len(rutas_monitoreadas), "monitores": [
+        {"id": m.id, "origen": m.origen, "destino": m.destino, "fecha": m.fecha,
+         "fuente": m.fuente, "activo": m.activo,
+         "ultima_revision": m.ultima_revision.isoformat() if m.ultima_revision else None}
+        for m in rutas_monitoreadas.values()
+    ]}
+
+@app.delete("/monitorear/{monitor_id}")
+async def detener_monitor(monitor_id: str):
+    if monitor_id not in rutas_monitoreadas:
+        raise HTTPException(404, "Monitor no encontrado")
+    rutas_monitoreadas[monitor_id].activo = False
+    del rutas_monitoreadas[monitor_id]
+    return {"exito": True, "mensaje": f"Monitor {monitor_id} detenido"}
 
 @app.get("/alertas")
 async def obtener_alertas(limite: int = 50):
@@ -619,135 +956,6 @@ async def limpiar_alertas():
     alertas_generadas.clear()
     return {"exito": True, "mensaje": "Alertas limpiadas"}
 
-async def obtener_sillas_redbus(route_id: int, operator_id: int, fecha: str,
-                                 from_city_name: str, to_city_name: str) -> Dict:
-    """Consulta el layout de sillas de un bus específico."""
-    url = "https://www.redbus.co/rpw/api/seatLayout"
-    params = {
-        "doj": fecha,
-        "routeId": str(route_id),
-        "oid": str(operator_id),
-        "seniorCitizen": "",
-        "deal": "",
-        "toCityName": to_city_name,
-        "fromCityName": from_city_name,
-        "bT": "1",
-        "removeStaleInvFromSRP": "true",
-    }
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Accept": "*/*",
-        "Referer": "https://www.redbus.co/",
-    }
-    response = await client.get(url, params=params, headers=headers)
-    response.raise_for_status()
-    data = response.json()
-
-    services = data.get("services", [])
-    if not services:
-        return {"disponibles": [], "ocupadas": [], "total": 0, "num_disponibles": 0, "num_ocupadas": 0}
-
-    seatlist = services[0].get("seatlist", [])
-    disponibles = sorted([s["Id"] for s in seatlist if s["IsAvailable"]], key=lambda x: int(x))
-    ocupadas = sorted([s["Id"] for s in seatlist if not s["IsAvailable"]], key=lambda x: int(x))
-
-    return {
-        "total": len(seatlist),
-        "num_disponibles": len(disponibles),
-        "num_ocupadas": len(ocupadas),
-        "disponibles": disponibles,
-        "ocupadas": ocupadas,
-    }
-
-@app.get("/sillas")
-async def consultar_sillas(
-    origen: str,
-    destino: str,
-    fecha: str,
-    hora_salida: str,
-    empresa: Optional[str] = None,
-):
-    """
-    Retorna las sillas disponibles y ocupadas de un bus específico.
-    Ejemplo: /sillas?origen=barranquilla&destino=medellin&fecha=2026-06-04&hora_salida=18:00
-    """
-    fecha_redbus = convertir_fecha_a_redbus(fecha)
-    origen_data = await buscar_ciudad_redbus(origen)
-    destino_data = await buscar_ciudad_redbus(destino)
-
-    if not origen_data:
-        raise HTTPException(404, f"Ciudad origen no encontrada: {origen}")
-    if not destino_data:
-        raise HTTPException(404, f"Ciudad destino no encontrada: {destino}")
-
-    hora_norm = hora_salida if len(hora_salida.split(":")) == 3 else hora_salida + ":00"
-
-    # Buscar el bus para obtener routeId y operatorId
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Accept": "*/*",
-        "Content-Type": "application/json",
-        "Origin": "https://www.redbus.co",
-        "Referer": "https://www.redbus.co/",
-    }
-    body = {
-        "appliedFilterCount": 0,
-        "onlyShow": [], "dt": [], "SeaterType": [], "AcType": [],
-        "travelsList": [], "amtList": [], "at": [], "bcf": [],
-        "bpIdentifier": [], "bpKeys": [], "bpList": [],
-        "dpIdentifier": [], "dpKeys": [], "dpList": [],
-        "RouteIds": [], "CampaignFilter": [], "opBusTypeFilterList": [],
-        "persuasionList": [], "preRouteFilters": None,
-        "priceRange": [], "streaksFilter": []
-    }
-    params = {
-        "fromCity": origen_data["id"], "toCity": destino_data["id"],
-        "DOJ": fecha_redbus, "limit": "100", "offset": "0",
-        "meta": "true", "groupId": "0", "sectionId": "0",
-        "sort": "0", "sortOrder": "0", "from": "initialLoad",
-        "getUuid": "true", "bT": "1",
-        "clearLMBFilter": "undefined", "isFilterApplied": "false",
-    }
-    r = await client.post(
-        "https://www.redbus.co/rpw/api/searchResults",
-        params=params, json=body, headers=headers
-    )
-    inventories = r.json().get("data", {}).get("inventories", [])
-
-    # Encontrar el bus exacto por hora y empresa
-    bus_raw = None
-    for inv in inventories:
-        dep = inv.get("departureTime", "")
-        hora_inv = dep.split(" ")[1] if dep else ""
-        emp_match = not empresa or empresa.lower() in inv.get("travelsName", "").lower()
-        if hora_inv == hora_norm and emp_match:
-            bus_raw = inv
-            break
-
-    if not bus_raw:
-        raise HTTPException(404, f"No se encontró bus a las {hora_salida}" +
-                            (f" de {empresa}" if empresa else ""))
-
-    sillas = await obtener_sillas_redbus(
-        route_id=bus_raw["routeId"],
-        operator_id=bus_raw["operatorId"],
-        fecha=fecha_redbus,
-        from_city_name=origen_data["name"].replace(" (Todos)", ""),
-        to_city_name=destino_data["name"].replace(" (Todos)", ""),
-    )
-
-    return {
-        "exito": True,
-        "bus": {
-            "empresa": bus_raw.get("travelsName"),
-            "tipo": bus_raw.get("busType"),
-            "hora_salida": hora_norm,
-            "hora_llegada": bus_raw.get("arrivalTime", "").split(" ")[1] if bus_raw.get("arrivalTime") else "",
-            "precio": bus_raw.get("fareList", [0])[0],
-            "route_id": bus_raw["routeId"],
-        },
-        "origen": origen.title(),
-        "destino": destino.title(),
-        "fecha": fecha,
-        "sillas": sillas,
-    }
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
