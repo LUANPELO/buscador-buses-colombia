@@ -63,8 +63,38 @@ CIUDADES = {
         "departamento": "Antioquia",
         "redbus_id": "195160",
         "redbus_name": "Medellin (Ant) (Todos)",
+        # OJO: Medellín tiene DOS terminales de Rápido Ochoa que cubren rutas
+        # DISTINTAS (no son intercambiables). Dejamos "ochoa_slug" apuntando a
+        # Terminal Norte por compatibilidad con el resto del codigo (RedBus,
+        # /ciudades, etc.), pero la búsqueda real (buscar_ochoa) NO debe usar
+        # solo este valor — debe consultar la lista MEDELLIN_TERMINALES de abajo
+        # para tambien cubrir Terminal Sur (Chocó, Jardín, Andes, Urrao, ...).
         "ochoa_slug": "t-medellin-ad933da7-aca7-456a-a0e6-96e843785cd2-ochoa",
         "ochoa_name": "Medellín Terminal Norte",
+    },
+    # Entradas explícitas para que el catálogo /ciudades (y por ende el
+    # autocompletado del panel de agentes) ofrezca cada terminal de Medellín
+    # como opción propia. Útiles para que un agente busque/verifique la
+    # cobertura de UNA terminal específica sin tener que escribir el nombre
+    # completo (el datalist del panel ya autocompleta con estos "nombre").
+    # OJO: estas claves NO reemplazan la entrada genérica "medellin" de arriba
+    # (que sigue usando auto-detección de ambas terminales vía
+    # MEDELLIN_TERMINALES); son atajos opcionales para apuntar a una sola.
+    "medellin terminal norte": {
+        "nombre": "Medellín Terminal Norte",
+        "departamento": "Antioquia",
+        "redbus_id": None,
+        "redbus_name": None,
+        "ochoa_slug": "t-medellin-ad933da7-aca7-456a-a0e6-96e843785cd2-ochoa",
+        "ochoa_name": "Medellín Terminal Norte",
+    },
+    "medellin terminal sur": {
+        "nombre": "Medellín Terminal Sur",
+        "departamento": "Antioquia",
+        "redbus_id": None,
+        "redbus_name": None,
+        "ochoa_slug": "t-medellin-3e6b672a-2b2b-409c-b8d6-3487e087e639-ochoa",
+        "ochoa_name": "Medellín Terminal Sur",
     },
     "barranquilla": {
         "nombre": "Barranquilla",
@@ -436,6 +466,25 @@ CIUDADES = {
     },
 }
 
+# ── Terminales de Medellín (Rápido Ochoa) ─────────────────────────────────────
+# Medellín NO es un solo punto de salida: Rápido Ochoa opera desde DOS terminales
+# que cubren rutas distintas y no intercambiables:
+#   - Terminal Norte: cubre la mayoría de las rutas "grandes" (Bogotá, Caucasia,
+#     Montería, Cartagena, etc.)
+#   - Terminal Sur: cubre rutas hacia el suroeste antioqueño y Chocó (Quibdó,
+#     Istmina, Cóndoto, Tutunendo, El Siete, Jardín, Andes, Urrao, Concordia,
+#     Caicedo, Betulia, Bolombolo, Ciudad Bolívar, etc.)
+#
+# Antes, "medellin" solo apuntaba al slug de Terminal Norte, así que cualquier
+# búsqueda hacia un destino que SOLO sale de Terminal Sur devolvía "no hay viajes"
+# (falso negativo: la ruta sí existe, solo que Rápido Ochoa la opera desde la otra
+# terminal). buscar_ochoa ahora prueba ambas terminales cuando la ciudad es
+# Medellín, y usa la que sí tenga viajes disponibles.
+MEDELLIN_TERMINALES = [
+    {"slug": "t-medellin-ad933da7-aca7-456a-a0e6-96e843785cd2-ochoa", "nombre": "Medellín Terminal Norte"},
+    {"slug": "t-medellin-3e6b672a-2b2b-409c-b8d6-3487e087e639-ochoa", "nombre": "Medellín Terminal Sur"},
+]
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def convertir_fecha_redbus(fecha_input: str) -> str:
@@ -462,24 +511,28 @@ def buscar_ciudad(nombre: str) -> Optional[Dict]:
     key = nombre.lower().strip()
     return CIUDADES.get(key)
 
+def obtener_terminales_ochoa(ciudad: Dict) -> list:
+    """Lista de terminales [{slug, nombre}] a probar para una ciudad en Rápido Ochoa.
+
+    Para Medellín devolvemos AMBAS terminales (Norte y Sur) porque cubren rutas
+    distintas — ver el comentario junto a MEDELLIN_TERMINALES. Para cualquier
+    otra ciudad devolvemos su único slug de siempre (comportamiento sin cambios)."""
+    if ciudad.get("nombre") == "Medellín":
+        return MEDELLIN_TERMINALES
+    slug = ciudad.get("ochoa_slug")
+    if not slug:
+        return []
+    return [{"slug": slug, "nombre": ciudad.get("ochoa_name") or ciudad["nombre"]}]
+
 # ── Fuente Rápido Ochoa ───────────────────────────────────────────────────────
 
-async def buscar_ochoa(origen: str, destino: str, fecha: str) -> Dict:
-    ciudad_o = buscar_ciudad(origen)
-    ciudad_d = buscar_ciudad(destino)
-    if not ciudad_o:
-        raise HTTPException(404, f"Ciudad no encontrada: {origen}")
-    if not ciudad_d:
-        raise HTTPException(404, f"Ciudad no encontrada: {destino}")
-    if not ciudad_o.get("ochoa_slug") or not ciudad_d.get("ochoa_slug"):
-        raise HTTPException(404, f"Ruta no disponible en Rápido Ochoa")
-
-    fecha_ochoa = convertir_fecha_ochoa(fecha)
-
-    # Paso 1: crear búsqueda
+async def _buscar_trips_ochoa(slug_origen: str, slug_destino: str, fecha_ochoa: str):
+    """Ejecuta UNA búsqueda (origen→destino ya resueltos a slugs) y devuelve
+    (search_id, trips). Aislado en su propia función para poder probar varias
+    combinaciones de terminales (ver buscar_ochoa) sin repetir el polling."""
     r1 = await client.post(f"{OCHOA_BASE}/search", json={
-        "origin": ciudad_o["ochoa_slug"],
-        "destination": ciudad_d["ochoa_slug"],
+        "origin": slug_origen,
+        "destination": slug_destino,
         "date": fecha_ochoa,
         "passengers": ["adult"],
         "round": False,
@@ -488,7 +541,6 @@ async def buscar_ochoa(origen: str, destino: str, fecha: str) -> Dict:
     r1.raise_for_status()
     search_id = r1.json()["search"]["id"]
 
-    # Paso 2: obtener trips (polling)
     trips = []
     for _ in range(5):
         await asyncio.sleep(2)
@@ -500,7 +552,9 @@ async def buscar_ochoa(origen: str, destino: str, fecha: str) -> Dict:
         trips = data.get("trips", [])
         if trips or data.get("state") == "finished":
             break
+    return search_id, trips
 
+def _formatear_trips_ochoa(trips: list, terminal_o: Dict, terminal_d: Dict) -> list:
     resultados = []
     for t in trips:
         dep = t.get("departure", "")
@@ -529,11 +583,62 @@ async def buscar_ochoa(origen: str, destino: str, fecha: str) -> Dict:
             "agotado": t.get("availability", 0) == 0,
             "trip_id": t.get("id"),
             "fuente": "rapido_ochoa",
+            # Terminal real de salida/llegada usada para encontrar este viaje —
+            # util quando Medellín tiene mas de una terminal (Norte/Sur) y el
+            # llamador (chatbot/agente) necesita saber de cual exactamente sale.
+            "terminal_salida": terminal_o["nombre"],
+            "terminal_llegada": terminal_d["nombre"],
         })
+    return resultados
+
+async def buscar_ochoa(origen: str, destino: str, fecha: str) -> Dict:
+    ciudad_o = buscar_ciudad(origen)
+    ciudad_d = buscar_ciudad(destino)
+    if not ciudad_o:
+        raise HTTPException(404, f"Ciudad no encontrada: {origen}")
+    if not ciudad_d:
+        raise HTTPException(404, f"Ciudad no encontrada: {destino}")
+
+    terminales_o = obtener_terminales_ochoa(ciudad_o)
+    terminales_d = obtener_terminales_ochoa(ciudad_d)
+    if not terminales_o or not terminales_d:
+        raise HTTPException(404, f"Ruta no disponible en Rápido Ochoa")
+
+    fecha_ochoa = convertir_fecha_ochoa(fecha)
+
+    # Probamos cada combinación terminal-origen × terminal-destino (normalmente
+    # solo hay 1 de cada lado; para Medellín hay 2, así que como máximo son 4
+    # combinaciones) y nos quedamos con la PRIMERA que sí devuelva viajes. Así
+    # cubrimos el caso real: Medellín → Quibdó solo existe desde Terminal Sur,
+    # mientras que Medellín → Bogotá solo existe desde Terminal Norte — antes,
+    # al estar "medellin" fijo a Terminal Norte, la primera ruta daba un falso
+    # "no hay viajes" aunque la empresa sí la opera.
+    search_id = None
+    resultados = []
+    terminal_o_usada = terminales_o[0]
+    terminal_d_usada = terminales_d[0]
+
+    for t_o in terminales_o:
+        for t_d in terminales_d:
+            if t_o["slug"] == t_d["slug"]:
+                continue  # origen y destino no pueden resolver a la misma terminal
+            try:
+                sid, trips = await _buscar_trips_ochoa(t_o["slug"], t_d["slug"], fecha_ochoa)
+            except httpx.HTTPStatusError:
+                continue
+            if search_id is None:
+                search_id = sid  # guardamos el primero como referencia, por si todas quedan vacias
+            if trips:
+                search_id = sid
+                terminal_o_usada, terminal_d_usada = t_o, t_d
+                resultados = _formatear_trips_ochoa(trips, t_o, t_d)
+                break
+        if resultados:
+            break
 
     return {
-        "origen": {"ciudad": ciudad_o["nombre"], "id": ciudad_o["ochoa_slug"]},
-        "destino": {"ciudad": ciudad_d["nombre"], "id": ciudad_d["ochoa_slug"]},
+        "origen": {"ciudad": ciudad_o["nombre"], "id": terminal_o_usada["slug"], "terminal": terminal_o_usada["nombre"]},
+        "destino": {"ciudad": ciudad_d["nombre"], "id": terminal_d_usada["slug"], "terminal": terminal_d_usada["nombre"]},
         "search_id": search_id,
         "resultados": resultados,
     }
